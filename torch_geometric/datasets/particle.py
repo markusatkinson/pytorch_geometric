@@ -34,19 +34,24 @@ class TrackMLParticleTrackingDataset(Dataset):
 
     def __init__(self, root, transform=None):
         super(TrackMLParticleTrackingDataset, self).__init__(root, transform)
-        events = glob.glob(osp.join(self.raw_dir, 'event*-hits.csv'))
-        events = [e.split(osp.sep)[-1].split('-')[0][5:] for e in events]
-        self.events = sorted(events)
 
     @property
     def raw_file_names(self):
-        event_indices = ['000001000']
+        # event_indices = ['000001000']
+        event_indices = self.events
         file_names = []
         file_names += [f'event{idx}-cells.csv' for idx in event_indices]
         file_names += [f'event{idx}-hits.csv' for idx in event_indices]
         file_names += [f'event{idx}-particles.csv' for idx in event_indices]
         file_names += [f'event{idx}-truth.csv' for idx in event_indices]
         return file_names
+
+    @property
+    def processed_file_names(self):
+        if not hasattr(self,'processed_files'):
+            proc_names = ['data_{}.pt'.format(idx) for idx in range(len(self.raw_file_names))]
+            self.processed_files = [osp.join(self.processed_dir,name) for name in proc_names]
+        return self.processed_files
 
     def download(self):
         raise RuntimeError(
@@ -81,8 +86,10 @@ class TrackMLParticleTrackingDataset(Dataset):
         value = scatter_add(value, hit_id, dim_size=pos.size(0))
         x = torch.stack([num_cells, value], dim=-1)
 
-        valid_idx = torch.tensor([[8, 2], [8, 4], [8, 6], [8, 8], [13, 2],
-                                  [13, 4], [13, 6], [13, 8], [17, 2], [17, 4]])
+        # valid_idx = torch.tensor([[8, 2], [8, 4], [8, 6], [8, 8], [13, 2],
+        #                           [13, 4], [13, 6], [13, 8], [17, 2], [17, 4]])
+        valid_idx = torch.tensor([[8, 2], [8, 4], [8, 6], [8, 8]])
+
         valid_assoc = 20 * valid_idx[:, 0] + valid_idx[:, 1]
         layer_assoc = 20 * layer_idx[:, 0] + layer_idx[:, 1]
         mask = torch.from_numpy(np.isin(layer_assoc, valid_assoc))
@@ -199,21 +206,27 @@ class TrackMLParticleTrackingDataset(Dataset):
         # weight = torch.from_numpy(y['weight'].values).to(torch.float)
 
     def read_event(self, idx):
-        idx = self.events[idx]
+        #idx = self.events[idx]
 
         hits_filename = osp.join(self.raw_dir, f'event{idx}-hits.csv')
         cells_filename = osp.join(self.raw_dir, f'event{idx}-cells.csv')
         mask, x, pos, layer = self.read_hits(hits_filename, cells_filename)
 
-        print(mask.size(), x.size(), pos.size(), layer.size())
-        print(mask[:2])
-        print(x[:2])
-        print(pos[:2])
-        print(layer[:2])
+        # print('processing event' + str(idx))
+        #
+        # print(mask.size(), x.size(), pos.size(), layer.size())
+        # print(mask[:2])
+        # print(x[:2])
+        # print(pos[:2])
+        # print(layer[:2])
 
         # edge_index = self.compute_edge_index(pos, layer)
         truth_filename = osp.join(self.raw_dir, f'event{idx}-truth.csv')
         particle, weight = self.read_y(truth_filename, mask, layer)
+
+        # print(particle.size(), weight.size())
+        # print(particle[:2])
+        # print(weight[:2])
 
         return Data(x=x, pos=pos, layer=layer, particle=particle,
                     weight=weight)
@@ -277,6 +290,30 @@ class TrackMLParticleTrackingDataset(Dataset):
         y_index = torch.stack([particle_id, hit_id], dim=0)
 
         return TrackingData(x=x, pos=pos, y_index=y_index, y_weight=weight)
+
+
+
+    def process(self):
+
+        events = glob.glob(osp.join(self.raw_dir, 'event*-hits.csv'))
+        events = [e.split(osp.sep)[-1].split('-')[0][5:] for e in events]
+        self.events = sorted(events)
+
+        for idx in self.events:
+            # Read data from `raw_path`.
+            data = self.read_event(idx)
+
+            # if self.pre_filter is not None and not self.pre_filter(data):
+            #     continue
+            #
+            # if self.pre_transform is not None:
+            #     data = self.pre_transform(data)
+            #
+            # torch.save(data, osp.join(self.processed_dir, 'data_{}.pt'.format(i)))
+            # i += 1
+
+
+
 
     def get(self, idx):
         return self.read_event(idx)

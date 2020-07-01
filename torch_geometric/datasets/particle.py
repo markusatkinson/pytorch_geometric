@@ -5,9 +5,8 @@ import torch
 import pandas
 import numpy as np
 from torch_scatter import scatter_add
-from torch_geometric.data import Data, Dataset
+from torch_geometric.data import Data, Dataset, InMemoryDataset
 from torch_geometric.utils import degree
-
 
 class TrackingData(Data):
     def __inc__(self, key, item):
@@ -17,7 +16,8 @@ class TrackingData(Data):
             return super(TrackingData, self).__inc__(key, item)
 
 
-class TrackMLParticleTrackingDataset(Dataset):
+# class TrackMLParticleTrackingDataset(Dataset):
+class TrackMLParticleTrackingDataset(InMemoryDataset):
     r"""The `TrackML Particle Tracking Challenge
     <https://www.kaggle.com/c/trackml-particle-identification>`_ dataset to
     reconstruct particle tracks from 3D points left in the silicon detectors.
@@ -124,6 +124,7 @@ class TrackMLParticleTrackingDataset(Dataset):
 
     def select_hits(self, hits, particles, truth):
         print('Selecting Hits')
+
         # cuts applied
         pt_min = 2.0
         eta_max = 5
@@ -143,6 +144,7 @@ class TrackMLParticleTrackingDataset(Dataset):
         theta = torch.atan2(r,z)
         eta = -1*torch.log(torch.tan(theta/2))
         pt = torch.from_numpy(np.sqrt(hits['px'].values**2 + hits['py'].values**2))
+        particle = torch.from_numpy(hits['particle_id'].values)
 
         layer_mask = torch.from_numpy(np.isin(layer, valid_layer))
         eta_mask = torch.abs(eta) < eta_max
@@ -155,8 +157,13 @@ class TrackMLParticleTrackingDataset(Dataset):
 
         pos = torch.stack([r, phi, z], 1)
         layer = layer[mask].unique(return_inverse=True)[1]
+        particle = particle[mask]
 
-        return pos, layer
+        layer, indices = torch.sort(layer)
+        pos = pos[indices]
+        particle = particle[indices]
+
+        return pos, layer, particle
 
 
     # def read_hits(self, hits_filename, cells_filename):
@@ -205,42 +212,93 @@ class TrackMLParticleTrackingDataset(Dataset):
     #     return mask, x, pos, layer
 
     def compute_edge_index(self, pos, layer):
-        r = (pos[:, 0].pow(2) + pos[:, 1].pow(2)).sqrt()
-        phi = torch.atan2(pos[:, 1], pos[:, 0])
-        # pos = torch.stack([r, phi, pos[:, 0]], dim=-1)
+        print("Constructing Edge Index")
 
+        # cuts applied
         phi_slope_max = 0.0006
-        z0_max = 100
+        z0_max = 150
+        layer_pairs = torch.tensor([[0, 1], [1, 2], [2, 3]])
 
-        edge_indices = []
-        for i in range(layer.max().item() + 1):
-            mask1 = layer == i
-            mask2 = layer == (i + 1)
+        for (layer1, layer2) in layer_pairs:
+            mask1 = layer == layer1
+            mask2 = layer == layer2
             nnz1 = mask1.nonzero().flatten()
             nnz2 = mask2.nonzero().flatten()
 
-            dphi = phi[mask2].view(1, -1) - phi[mask1].view(-1, 1)
+            dr   = pos[:, 0][mask2].view(1, -1) - pos[:, 0][mask1].view(-1, 1)
+            dphi = pos[:, 1][mask2].view(1, -1) - pos[:, 1][mask1].view(-1, 1)
+            dz   = pos[:, 2][mask2].view(1, -1) - pos[:, 2][mask1].view(-1, 1)
             dphi[dphi > np.pi] -= 2 * np.pi
             dphi[dphi < -np.pi] += 2 * np.pi
 
-            adj = dphi
-            row, col = adj.nonzero().t()
-            row = nnz1[row]
-            col = nnz2[col]
-            edge_index = torch.stack([row, col], dim=0)
-            return edge_index
-
-            dz = pos[:, 2][mask2].view(1, -1) - pos[:, 2][mask1].view(-1, 1)
-            dr = r[mask2].view(1, -1) - r[mask1].view(-1, 1)
             phi_slope = dphi / dr
-            z0 = pos[:, 2][mask1].view(-1, 1) - r[mask1].view(-1, 1) * dz / dr
+            z0 = pos[:, 2][mask1].view(-1, 1) - pos[:, 0][mask1].view(-1, 1) * dz / dr
+
             adj = (phi_slope.abs() < phi_slope_max) & (z0.abs() < z0_max)
 
             row, col = adj.nonzero().t()
             row = nnz1[row]
             col = nnz2[col]
             edge_index = torch.stack([row, col], dim=0)
-            return edge_index
+
+            if (layer1 == 0):
+                edge_indices = edge_index
+            else:
+                edge_indices = torch.cat((edge_indices, edge_index), 1)
+
+        return edge_indices
+
+
+
+    def compute_y_index(self, edge_indices, particle):
+        print("Constructing y Index")
+
+        pid1 = [ particle[i].item() for i in edge_indices[0] ]
+        pid2 = [ particle[i].item() for i in edge_indices[1] ]
+        y = np.zeros(edge_indices.shape[1], dtype=np.uint8)
+        for i in range(edge_indices.shape[1]):
+            if pid1[i] == pid2[i]:
+                y[i] = 1
+
+        return torch.from_numpy(y)
+
+        # r = pos[:, 0]
+        # phi = pos[:, 1]
+        # z = pos[:,2]
+        # # r = (pos[:, 0].pow(2) + pos[:, 1].pow(2)).sqrt()
+        # # phi = torch.atan2(pos[:, 1], pos[:, 0])
+        # # pos = torch.stack([r, phi, pos[:, 0]], dim=-1)
+        #
+        #
+        # edge_indices = []
+        # for i in range(layer.max().item() + 1):
+        #     mask1 = layer == i
+        #     mask2 = layer == (i + 1)
+        #     nnz1 = mask1.nonzero().flatten()
+        #     nnz2 = mask2.nonzero().flatten()
+        #
+        #     dphi = phi[mask2].view(1, -1) - phi[mask1].view(-1, 1)
+        #     dphi[dphi > np.pi] -= 2 * np.pi
+        #     dphi[dphi < -np.pi] += 2 * np.pi
+        #
+        #     adj = dphi
+        #     row, col = adj.nonzero().t()
+        #     row = nnz1[row]
+        #     col = nnz2[col]
+        #     edge_index = torch.stack([row, col], dim=0)
+        #     # return edge_index
+        #
+        #     dz = pos[:, 2][mask2].view(1, -1) - pos[:, 2][mask1].view(-1, 1)
+        #     dr = r[mask2].view(1, -1) - r[mask1].view(-1, 1)
+        #     phi_slope = dphi / dr
+        #     z0 = pos[:, 2][mask1].view(-1, 1) - r[mask1].view(-1, 1) * dz / dr
+        #     adj = (phi_slope.abs() < phi_slope_max) & (z0.abs() < z0_max)
+        #
+        #     row, col = adj.nonzero().t()
+        #     row = nnz1[row]
+        #     col = nnz2[col]
+        #     edge_index = torch.stack([row, col], dim=0)
+        #     # return edge_index
 
     # dphi = phi2 - phi1
     # dphi[dphi > np.pi] -= 2 * np.pi
@@ -261,31 +319,31 @@ class TrackMLParticleTrackingDataset(Dataset):
     #     # Filter segments according to criteria
     #     good_seg_mask = (phi_slope.abs() < phi_slope_max) & (z0.abs() < z0_max)
     #     return hit_pairs[['index_1', 'index_2']][good_seg_mask]
-        pass
+        # pass
 
-    def read_y(self, truth_filename, particles_filename, mask, layer):
-        truth = pandas.read_csv(
-            truth_filename, usecols=['particle_id', 'weight'], dtype={
-                'particle_id': np.int64,
-                'weight': np.float32
-            })
-
-        particles = pandas.read_csv(
-            particles_filename, usecols=['particle_id', 'px', 'py'], dtype={
-                'particle_id': np.int64,
-                'px': np.float32,
-                'py': np.float32
-            })
-
-
-        new_truth = (truth[['particle_id', 'weight']]
-                     .merge(particles[['particle_id', 'px', 'py']], on='particle_id'))
-
-
-        particle = torch.from_numpy(truth['particle_id'].values)[mask]
-        particle = particle.unique(return_inverse=True)[1].sub_(1)
-        weight = torch.from_numpy(truth['weight'].values)[mask]
-
+    # def read_y(self, truth_filename, particles_filename, mask, layer):
+    #     truth = pandas.read_csv(
+    #         truth_filename, usecols=['particle_id', 'weight'], dtype={
+    #             'particle_id': np.int64,
+    #             'weight': np.float32
+    #         })
+    #
+    #     particles = pandas.read_csv(
+    #         particles_filename, usecols=['particle_id', 'px', 'py'], dtype={
+    #             'particle_id': np.int64,
+    #             'px': np.float32,
+    #             'py': np.float32
+    #         })
+    #
+    #
+    #     new_truth = (truth[['particle_id', 'weight']]
+    #                  .merge(particles[['particle_id', 'px', 'py']], on='particle_id'))
+    #
+    #
+    #     particle = torch.from_numpy(truth['particle_id'].values)[mask]
+    #     particle = particle.unique(return_inverse=True)[1].sub_(1)
+    #     weight = torch.from_numpy(truth['weight'].values)[mask]
+    #
         # edge_indices = []
         # # for i in range(layer.max().item() + 1):
         # for i in range(8, 9):
@@ -302,7 +360,7 @@ class TrackMLParticleTrackingDataset(Dataset):
         #     edge_indices.append(edge_index)
 
         # edge_index = torch.cat(edge_indices, dim=-1)
-        return particle, weight, pt
+        # return particle, weight, pt
 
         # cells = pandas.read_csv(
         #     cells_filename, usecols=['hit_id', 'value'], dtype={
@@ -375,44 +433,44 @@ class TrackMLParticleTrackingDataset(Dataset):
 
         # print(layer)
 
-        raise NotImplementedError
-
-        pos = torch.from_numpy(pos.values).div_(1000.)
-
-        # Get hit features.
-        cells_path = osp.join(self.raw_dir, f'event{idx}-cells.csv')
-        cell = pandas.read_csv(cells_path, usecols=['hit_id', 'value'])
-        hit_id = torch.from_numpy(cell['hit_id'].values).to(torch.long).sub_(1)
-        value = torch.from_numpy(cell['value'].values).to(torch.float)
-        ones = torch.ones(hit_id.size(0))
-        num_cells = scatter_add(ones, hit_id, dim_size=pos.size(0)).div_(10.)
-        value = scatter_add(value, hit_id, dim_size=pos.size(0))
-        x = torch.stack([num_cells, value], dim=-1)
-
-        # Get ground-truth hit assignments.
-        truth_path = osp.join(self.raw_dir, f'event{idx}-truth.csv')
-        y = pandas.read_csv(truth_path,
-                            usecols=['hit_id', 'particle_id', 'weight'])
-        hit_id = torch.from_numpy(y['hit_id'].values).to(torch.long).sub_(1)
-        particle_id = torch.from_numpy(y['particle_id'].values).to(torch.long)
-        particle_id = particle_id.unique(return_inverse=True)[1].sub_(1)
-        weight = torch.from_numpy(y['weight'].values).to(torch.float)
-
-        # Sort.
-        perm = (particle_id * hit_id.size(0) + hit_id).argsort()
-        hit_id = hit_id[perm]
-        particle_id = particle_id[perm]
-        weight = weight[perm]
-
-        # Remove invalid particle ids.
-        mask = particle_id >= 0
-        hit_id = hit_id[mask]
-        particle_id = particle_id[mask]
-        weight = weight[mask]
-
-        y_index = torch.stack([particle_id, hit_id], dim=0)
-
-        return TrackingData(x=x, pos=pos, y_index=y_index, y_weight=weight)
+        # raise NotImplementedError
+        #
+        # pos = torch.from_numpy(pos.values).div_(1000.)
+        #
+        # # Get hit features.
+        # cells_path = osp.join(self.raw_dir, f'event{idx}-cells.csv')
+        # cell = pandas.read_csv(cells_path, usecols=['hit_id', 'value'])
+        # hit_id = torch.from_numpy(cell['hit_id'].values).to(torch.long).sub_(1)
+        # value = torch.from_numpy(cell['value'].values).to(torch.float)
+        # ones = torch.ones(hit_id.size(0))
+        # num_cells = scatter_add(ones, hit_id, dim_size=pos.size(0)).div_(10.)
+        # value = scatter_add(value, hit_id, dim_size=pos.size(0))
+        # x = torch.stack([num_cells, value], dim=-1)
+        #
+        # # Get ground-truth hit assignments.
+        # truth_path = osp.join(self.raw_dir, f'event{idx}-truth.csv')
+        # y = pandas.read_csv(truth_path,
+        #                     usecols=['hit_id', 'particle_id', 'weight'])
+        # hit_id = torch.from_numpy(y['hit_id'].values).to(torch.long).sub_(1)
+        # particle_id = torch.from_numpy(y['particle_id'].values).to(torch.long)
+        # particle_id = particle_id.unique(return_inverse=True)[1].sub_(1)
+        # weight = torch.from_numpy(y['weight'].values).to(torch.float)
+        #
+        # # Sort.
+        # perm = (particle_id * hit_id.size(0) + hit_id).argsort()
+        # hit_id = hit_id[perm]
+        # particle_id = particle_id[perm]
+        # weight = weight[perm]
+        #
+        # # Remove invalid particle ids.
+        # mask = particle_id >= 0
+        # hit_id = hit_id[mask]
+        # particle_id = particle_id[mask]
+        # weight = weight[mask]
+        #
+        # y_index = torch.stack([particle_id, hit_id], dim=0)
+        #
+        # return TrackingData(x=x, pos=pos, y_index=y_index, y_weight=weight)
 
 
 
@@ -422,16 +480,25 @@ class TrackMLParticleTrackingDataset(Dataset):
         events = [e.split(osp.sep)[-1].split('-')[0][5:] for e in events]
         self.events = sorted(events)
 
+        data_list = []
         for idx in self.events:
             # Read data from `raw_path`.
             hits, particles, truth = self.read_event(idx)
-
-            print(hits.shape[0])
+            print('Number of hits in raw data: ' + str(hits.shape[0]))
 
             # Extract desired nodes
-            pos, layer = self.select_hits(hits, particles, truth)
+            pos, layer, particle = self.select_hits(hits, particles, truth)
+            print('Number of hits selected: ' + str(pos.size()[0]))
 
-            print(pos.size()[0])
+            # Construct Edges
+            edge_index = self.compute_edge_index(pos, layer)
+            print('Total Number of edges constructed: ' + str(edge_index.shape[1]))
+
+            # Construct target index
+            y = self.compute_y_index(edge_index, particle)
+            print('Number of true edges constructed: ' + str(y.sum().item()))
+
+            data = Data(edge_index=edge_index, y=y, pos=pos)
 
             # if self.pre_filter is not None and not self.pre_filter(data):
             #     continue
@@ -439,10 +506,9 @@ class TrackMLParticleTrackingDataset(Dataset):
             # if self.pre_transform is not None:
             #     data = self.pre_transform(data)
             #
-            # torch.save(data, osp.join(self.processed_dir, 'data_{}.pt'.format(i)))
-            # i += 1
-
-
+            data_list.append(data)
+            print('')
+        torch.save(self.collate(data_list), self.processed_paths[0])
 
 
     def get(self, idx):

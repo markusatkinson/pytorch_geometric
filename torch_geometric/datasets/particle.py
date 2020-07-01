@@ -37,8 +37,8 @@ class TrackMLParticleTrackingDataset(Dataset):
 
     @property
     def raw_file_names(self):
-        # event_indices = ['000001000']
-        event_indices = self.events
+        event_indices = ['000001000']
+        # event_indices = self.events
         file_names = []
         file_names += [f'event{idx}-cells.csv' for idx in event_indices]
         file_names += [f'event{idx}-hits.csv' for idx in event_indices]
@@ -61,50 +61,148 @@ class TrackMLParticleTrackingDataset(Dataset):
     def len(self):
         return len(glob.glob(osp.join(self.raw_dir, 'event*-hits.csv')))
 
-    def read_hits(self, hits_filename, cells_filename):
+    def read_hits(self, idx):
+        hits_filename = osp.join(self.raw_dir, f'event{idx}-hits.csv')
         hits = pandas.read_csv(
-            hits_filename, usecols=['x', 'y', 'z', 'volume_id', 'layer_id'],
+            hits_filename, usecols=['hit_id', 'x', 'y', 'z', 'volume_id', 'layer_id', 'module_id'],
             dtype={
+                'hit_id': np.int64,
                 'x': np.float32,
                 'y': np.float32,
                 'z': np.float32,
                 'volume_id': np.int64,
                 'layer_id': np.int64,
+                'module_id': np.int64
             })
-        pos = torch.from_numpy(hits[['x', 'y', 'z']].values)
-        layer_idx = torch.from_numpy(hits[['volume_id', 'layer_id']].values)
+        return hits
 
+    def read_cells(self, idx):
+        cells_filename = osp.join(self.raw_dir, f'event{idx}-cells.csv')
         cells = pandas.read_csv(
-            cells_filename, usecols=['hit_id', 'value'], dtype={
+            cells_filename, usecols=['hit_id', 'ch0', 'ch1', 'value'],
+            dtype={
                 'hit_id': np.int64,
-                'value': np.float32,
+                'ch0': np.int64,
+                'ch1': np.int64,
+                'value': np.float32
             })
-        hit_id = torch.from_numpy(cells['hit_id'].values).sub_(1)
-        value = torch.from_numpy(cells['value'].values)
+        return cells
 
-        num_cells = degree(hit_id, num_nodes=pos.size(0))
-        value = scatter_add(value, hit_id, dim_size=pos.size(0))
-        x = torch.stack([num_cells, value], dim=-1)
+    def read_particles(self, idx):
+        particles_filename = osp.join(self.raw_dir, f'event{idx}-particles.csv')
+        particles = pandas.read_csv(
+            particles_filename, usecols=['particle_id', 'vx', 'vy', 'vz', 'px', 'py', 'pz', 'q', 'nhits'],
+            dtype={
+                'particle_id': np.int64,
+                'vx': np.float32,
+                'vy': np.float32,
+                'vz': np.float32,
+                'px': np.float32,
+                'py': np.float32,
+                'pz': np.float32,
+                'q': np.int64,
+                'nhits': np.int64
+            })
+        return particles
 
-        # valid_idx = torch.tensor([[8, 2], [8, 4], [8, 6], [8, 8], [13, 2],
-        #                           [13, 4], [13, 6], [13, 8], [17, 2], [17, 4]])
-        valid_idx = torch.tensor([[8, 2], [8, 4], [8, 6], [8, 8]])
+    def read_truth(self, idx):
+        truth_filename = osp.join(self.raw_dir, f'event{idx}-truth.csv')
+        truth = pandas.read_csv(
+            truth_filename, usecols=['hit_id', 'particle_id', 'tx', 'ty', 'tz', 'tpx', 'tpy', 'tpz', 'weight'],
+            dtype={
+                'hit_id': np.int64,
+                'particle_id': np.int64,
+                'tx': np.float32,
+                'ty': np.float32,
+                'tz': np.float32,
+                'tpx': np.float32,
+                'tpy': np.float32,
+                'tpz': np.float32,
+                'weight': np.float32
+            })
+        return truth
 
-        valid_assoc = 20 * valid_idx[:, 0] + valid_idx[:, 1]
-        layer_assoc = 20 * layer_idx[:, 0] + layer_idx[:, 1]
-        mask = torch.from_numpy(np.isin(layer_assoc, valid_assoc))
+    def select_hits(self, hits, particles, truth):
+        print('Selecting Hits')
+        # cuts applied
+        pt_min = 2.0
+        eta_max = 5
+        volume_layer_id = torch.tensor([[8, 2], [8, 4], [8, 6], [8, 8]])
 
-        x = x[mask]
-        pos = pos[mask]
-        layer = layer_assoc[mask].unique(return_inverse=True)[1]
 
-        # mask = torch.zeros(x.size(0), dtype=bool)
-        # mask[torch.randperm(x.size(0))[:1000]] = True
-        # x = x[mask]
-        # pos = pos[mask]
-        # layer = layer[mask]
+        valid_layer = 20 * volume_layer_id[:,0] + volume_layer_id[:,1]
+        hits = (hits[['hit_id', 'x', 'y', 'z', 'volume_id', 'layer_id']]
+                .merge(truth[['hit_id', 'particle_id']], on='hit_id'))
+        hits = (hits[['hit_id', 'x', 'y', 'z', 'volume_id', 'layer_id', 'particle_id']]
+                .merge(particles[['particle_id', 'px', 'py', 'pz']], on='particle_id'))
 
-        return mask, x, pos, layer
+        layer = torch.from_numpy(20 * hits['volume_id'].values + hits['layer_id'].values)
+        r = torch.from_numpy(np.sqrt(hits['x'].values**2 + hits['y'].values**2))
+        phi = torch.from_numpy(np.arctan2(hits['y'].values, hits['x'].values))
+        z = torch.from_numpy(hits['z'].values)
+        theta = torch.atan2(r,z)
+        eta = -1*torch.log(torch.tan(theta/2))
+        pt = torch.from_numpy(np.sqrt(hits['px'].values**2 + hits['py'].values**2))
+
+        layer_mask = torch.from_numpy(np.isin(layer, valid_layer))
+        eta_mask = torch.abs(eta) < eta_max
+        pt_mask = pt > pt_min
+        mask = layer_mask & eta_mask & pt_mask
+
+        r = r[mask]
+        phi = phi[mask]
+        z = z[mask]
+
+        pos = torch.stack([r, phi, z], 1)
+        layer = layer[mask].unique(return_inverse=True)[1]
+
+        return pos, layer
+
+
+    # def read_hits(self, hits_filename, cells_filename):
+    #     hits = pandas.read_csv(
+    #         hits_filename, usecols=['x', 'y', 'z', 'volume_id', 'layer_id'],
+    #         dtype={
+    #             'x': np.float32,
+    #             'y': np.float32,
+    #             'z': np.float32,
+    #             'volume_id': np.int64,
+    #             'layer_id': np.int64,
+    #         })
+    #     pos = torch.from_numpy(hits[['x', 'y', 'z']].values)
+    #     layer_idx = torch.from_numpy(hits[['volume_id', 'layer_id']].values)
+    #
+    #     cells = pandas.read_csv(
+    #         cells_filename, usecols=['hit_id', 'value'], dtype={
+    #             'hit_id': np.int64,
+    #             'value': np.float32,
+    #         })
+    #     hit_id = torch.from_numpy(cells['hit_id'].values).sub_(1)
+    #     value = torch.from_numpy(cells['value'].values)
+    #
+    #     num_cells = degree(hit_id, num_nodes=pos.size(0))
+    #     value = scatter_add(value, hit_id, dim_size=pos.size(0))
+    #     x = torch.stack([num_cells, value], dim=-1)
+    #
+    #     # valid_idx = torch.tensor([[8, 2], [8, 4], [8, 6], [8, 8], [13, 2],
+    #     #                           [13, 4], [13, 6], [13, 8], [17, 2], [17, 4]])
+    #     valid_idx = torch.tensor([[8, 2], [8, 4], [8, 6], [8, 8]])
+    #
+    #     valid_assoc = 20 * valid_idx[:, 0] + valid_idx[:, 1]
+    #     layer_assoc = 20 * layer_idx[:, 0] + layer_idx[:, 1]
+    #     mask = torch.from_numpy(np.isin(layer_assoc, valid_assoc))
+    #
+    #     x = x[mask]
+    #     pos = pos[mask]
+    #     layer = layer_assoc[mask].unique(return_inverse=True)[1]
+    #
+    #     # mask = torch.zeros(x.size(0), dtype=bool)
+    #     # mask[torch.randperm(x.size(0))[:1000]] = True
+    #     # x = x[mask]
+    #     # pos = pos[mask]
+    #     # layer = layer[mask]
+    #
+    #     return mask, x, pos, layer
 
     def compute_edge_index(self, pos, layer):
         r = (pos[:, 0].pow(2) + pos[:, 1].pow(2)).sqrt()
@@ -165,12 +263,24 @@ class TrackMLParticleTrackingDataset(Dataset):
     #     return hit_pairs[['index_1', 'index_2']][good_seg_mask]
         pass
 
-    def read_y(self, truth_filename, mask, layer):
+    def read_y(self, truth_filename, particles_filename, mask, layer):
         truth = pandas.read_csv(
             truth_filename, usecols=['particle_id', 'weight'], dtype={
                 'particle_id': np.int64,
                 'weight': np.float32
             })
+
+        particles = pandas.read_csv(
+            particles_filename, usecols=['particle_id', 'px', 'py'], dtype={
+                'particle_id': np.int64,
+                'px': np.float32,
+                'py': np.float32
+            })
+
+
+        new_truth = (truth[['particle_id', 'weight']]
+                     .merge(particles[['particle_id', 'px', 'py']], on='particle_id'))
+
 
         particle = torch.from_numpy(truth['particle_id'].values)[mask]
         particle = particle.unique(return_inverse=True)[1].sub_(1)
@@ -192,7 +302,7 @@ class TrackMLParticleTrackingDataset(Dataset):
         #     edge_indices.append(edge_index)
 
         # edge_index = torch.cat(edge_indices, dim=-1)
-        return particle, weight
+        return particle, weight, pt
 
         # cells = pandas.read_csv(
         #     cells_filename, usecols=['hit_id', 'value'], dtype={
@@ -208,10 +318,19 @@ class TrackMLParticleTrackingDataset(Dataset):
     def read_event(self, idx):
         #idx = self.events[idx]
 
-        hits_filename = osp.join(self.raw_dir, f'event{idx}-hits.csv')
-        cells_filename = osp.join(self.raw_dir, f'event{idx}-cells.csv')
-        mask, x, pos, layer = self.read_hits(hits_filename, cells_filename)
+        print('reading event' + str(idx))
 
+        hits      = self.read_hits(idx)
+        # cells     = self.read_cells(idx)
+        particles = self.read_particles(idx)
+        truth     = self.read_truth(idx)
+
+        # return hits, cells, particles, truth
+        return hits, particles, truth
+        # hits_filename = osp.join(self.raw_dir, f'event{idx}-hits.csv')
+        # cells_filename = osp.join(self.raw_dir, f'event{idx}-cells.csv')
+        # mask, x, pos, layer = self.read_hits(hits_filename, cells_filename)
+        #
         # print('processing event' + str(idx))
         #
         # print(mask.size(), x.size(), pos.size(), layer.size())
@@ -219,17 +338,21 @@ class TrackMLParticleTrackingDataset(Dataset):
         # print(x[:2])
         # print(pos[:2])
         # print(layer[:2])
-
-        # edge_index = self.compute_edge_index(pos, layer)
-        truth_filename = osp.join(self.raw_dir, f'event{idx}-truth.csv')
-        particle, weight = self.read_y(truth_filename, mask, layer)
-
-        # print(particle.size(), weight.size())
+        #
+        # # edge_index = self.compute_edge_index(pos, layer)
+        # truth_filename = osp.join(self.raw_dir, f'event{idx}-truth.csv')
+        # particles_filename = osp.join(self.raw_dir, f'event{idx}-particles.csv')
+        # particle, weight, pt = self.read_y(truth_filename, particles_filename, mask, layer)
+        #
+        # print(particle.size(), weight.size(), pt.size())
         # print(particle[:2])
         # print(weight[:2])
-
-        return Data(x=x, pos=pos, layer=layer, particle=particle,
-                    weight=weight)
+        # print(pt[:2])
+        #
+        # print('')
+        #
+        # return Data(x=x, pos=pos, layer=layer, particle=particle,
+        #             weight=weight)
 
         # print(layer_assoc)
         # print(layer[:5])
@@ -301,7 +424,14 @@ class TrackMLParticleTrackingDataset(Dataset):
 
         for idx in self.events:
             # Read data from `raw_path`.
-            data = self.read_event(idx)
+            hits, particles, truth = self.read_event(idx)
+
+            print(hits.shape[0])
+
+            # Extract desired nodes
+            pos, layer = self.select_hits(hits, particles, truth)
+
+            print(pos.size()[0])
 
             # if self.pre_filter is not None and not self.pre_filter(data):
             #     continue

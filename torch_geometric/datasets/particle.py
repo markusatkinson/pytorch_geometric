@@ -23,30 +23,59 @@ class TrackMLParticleTrackingDataset(Dataset):
 
     Args:
         root (string): Root directory where the dataset should be saved.
+
         transform (callable, optional): A function/transform that takes in an
             :obj:`torch_geometric.data.Data` object and returns a transformed
             version. The data object will be transformed before every access.
             (default: :obj:`None`)
+
+        volume_layer_ids (List): List of the volume and layer ids to be included
+            in the graph.
+
+        layer_pairs (List): List of which pairs of layers can have edges between them
+
+        pt_min (float32): A truth cut applied to reduce the number of nodes in the graph.
+            Only nodes associated with particles above this momentum are included.
+
+        phi_slope_max (float32): A cut applied to edges to limit the change in phi between
+            the two nodes.
+
+        z0_max (float32): A cut applied to edges that limits how far from the center of
+            the detector the particle edge can originate from.
+
+        n_phi_sections (int): Break the graph into multiple segments in the phi direction.
+
+        n_eta_sections (int): Break the graph into multiple segments in the eta direction.
+
     """
 
     url = 'https://www.kaggle.com/c/trackml-particle-identification'
 
-    def __init__(self, root, transform=None):
+    def __init__(self, root, transform=None,
+                 volume_layer_ids=[[8, 2], [8, 4], [8, 6], [8, 8]],
+                 layer_pairs=[[0, 1], [1, 2], [2, 3]],
+                 pt_min=2.0, phi_slope_max=0.0006, z0_max=150,
+                 n_phi_sections=1, n_eta_sections=1
+                 ):
         events = glob.glob(osp.join(osp.join(root, 'raw'), 'event*-hits.csv'))
         events = [e.split(osp.sep)[-1].split('-')[0][5:] for e in events]
         self.events = sorted(events)
 
         # Layers Selected and connections allowed
-        self.volume_layer_id = torch.tensor([[8, 2], [8, 4], [8, 6], [8, 8]])
-        self.layer_pairs = torch.tensor([[0, 1], [1, 2], [2, 3]])
+        self.volume_layer_ids = torch.tensor(volume_layer_ids)
+        self.layer_pairs = torch.tensor(layer_pairs)
 
         # Cuts applied to node selection
-        self.pt_min = 2.0
+        self.pt_min = pt_min
         self.eta_max = 5
 
         # Cuts applied to edge construction
-        self.phi_slope_max = 0.0006
-        self.z0_max = 150
+        self.phi_slope_max = phi_slope_max
+        self.z0_max = z0_max
+
+        # Split the graph into sections  (Not implemented yet)
+        self.n_phi_sections = n_phi_sections
+        self.n_eta_sections = n_eta_sections
 
         super(TrackMLParticleTrackingDataset, self).__init__(root, transform)
 
@@ -147,7 +176,7 @@ class TrackMLParticleTrackingDataset(Dataset):
 
     def select_hits(self, hits, particles, truth):
         # print('Selecting Hits')
-        valid_layer = 20 * self.volume_layer_id[:,0] + self.volume_layer_id[:,1]
+        valid_layer = 20 * self.volume_layer_ids[:,0] + self.volume_layer_ids[:,1]
         hits = (hits[['hit_id', 'x', 'y', 'z', 'volume_id', 'layer_id']]
                 .merge(truth[['hit_id', 'particle_id']], on='hit_id'))
         hits = (hits[['hit_id', 'x', 'y', 'z', 'volume_id', 'layer_id', 'particle_id']]

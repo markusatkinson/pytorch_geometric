@@ -1,0 +1,90 @@
+# Input/output configuration
+input_dir: /data/gnn_code/trackml-particle-identification/train_all
+output_dir: /data/gnn_code/heptrkx-gnn-tracking/output
+n_files: 8850
+
+# Graph building configuration
+selection:
+    # pt_min: 0.5 # GeV
+    # phi_slope_max: 0.000763   #99% efficient
+    # z0_max: 29.951            #99% efficient
+    # phi_slope_max: 0.000654   #98% efficient
+    # z0_max: 18.473            #98% efficient
+    # phi_slope_max: 0.000623   #97% efficient
+    # z0_max: 15.891            #97% efficient
+
+    # pt_min: 1.0 # GeV
+    # phi_slope_max: 0.000424   #99% efficient
+    # z0_max: 18.057            #99% efficient
+    # phi_slope_max: 0.000354   #98% efficient
+    # z0_max: 15.006            #98% efficient
+    # phi_slope_max: 0.000328   #97% efficient
+    # z0_max: 13.523            #97% efficient
+
+    # pt_min: 1.5 # GeV
+    # phi_slope_max: 0.000310   #99% efficient
+    # z0_max: 16.563            #99% efficient
+    # phi_slope_max: 0.000257   #98% efficient
+    # z0_max: 14.128            #98% efficient
+    # phi_slope_max: 0.000234   #97% efficient
+    # z0_max: 12.959            #97% efficient
+
+    pt_min: 2.0 # GeV
+    phi_slope_max: 0.000262   #99% efficient
+    # z0_max: 15.693            #99% efficient
+    # phi_slope_max: 0.000212   #98% efficient
+    # z0_max: 13.696            #98% efficient
+    # phi_slope_max: 0.000189   #97% efficient
+    # z0_max: 12.652            #97% efficient
+
+    # pt_min: 2.5 # GeV
+    # phi_slope_max: 0.000247   #99% efficient
+    # z0_max: 15.473            #99% efficient
+    # phi_slope_max: 0.000189   #98% efficient
+    # z0_max: 13.342            #98% efficient
+    # phi_slope_max: 0.000164   #97% efficient
+    # z0_max: 12.300            #97% efficient
+
+    # pt_min: 3.0 # GeV
+    # phi_slope_max: 0.000242   #99% efficient
+    # z0_max: 15.135            #99% efficient
+    # phi_slope_max: 0.000179   #98% efficient
+    # z0_max: 13.133            #98% efficient
+    # phi_slope_max: 0.000151   #97% efficient
+    # z0_max: 12.132            #97% efficient
+
+    #Original cut values used
+    # phi_slope_max: 0.0006
+    z0_max: 15000
+
+    #Cut values used for tuning
+    # phi_slope_max: 0.002
+    # z0_max: 150
+
+    n_phi_sections: 1
+    n_eta_sections: 1
+    eta_range: [-5, 5]
+
+    #Edges between barrel and endcap can intersect intermediate barrel layers
+    remove_intersecting_edges: True
+
+    #Construct Phi-Reflected versions of each graph (charge conjugate pairing)
+    construct_augmented_graphs: True
+
+    # TrackML Geometry
+    volume_layer_ids: [[8,2], [8,4], [8,6], [8,8],                             #barrel
+                       [9,2], [9,4], [9,6], [9,8], [9,10], [9,12], [9,14],     #front endcap
+                       [7,2], [7,4], [7,6], [7,8], [7,10], [7,12], [7,14]]     #back endcap
+
+    layer_pairs : [[0, 1], [1, 2], [2, 3],                                     #barrel
+                   [0, 4], [1, 4], [2, 4], [3, 4],                             #barrel to front endcap
+                   [4, 5], [5, 6], [6, 7], [7, 8], [8, 9], [9, 10],            #front endcap
+                   [0, 17], [1, 17], [2, 17], [3, 17],                         #barrel to back endcap
+                   [17, 16], [16, 15], [15, 14], [14, 13], [13, 12], [12, 11]] #back endcap
+
+    # ATLAS Geometry
+    # volume_layer_ids: [[80,0], [81,0], [82,0], [83,0], [84,0],                 #Inner Barrel
+    #                    [13,0], [13,1], [13,2], [13,3]]                         #Outer Barrel
+    #
+    # layer_pairs : [[0, 1], [1, 2], [2, 3], [3, 4],                             #Inner Barrel
+    #                [4, 5], [5, 6], [6, 7], [7, 8]]                             #Outer Barrel

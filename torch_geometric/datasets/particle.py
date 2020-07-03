@@ -37,11 +37,23 @@ class TrackMLParticleTrackingDataset(Dataset):
         events = [e.split(osp.sep)[-1].split('-')[0][5:] for e in events]
         self.events = sorted(events)
 
+        # Layers Selected and connections allowed
+        self.volume_layer_id = torch.tensor([[8, 2], [8, 4], [8, 6], [8, 8]])
+        self.layer_pairs = torch.tensor([[0, 1], [1, 2], [2, 3]])
+
+        # Cuts applied to node selection
+        self.pt_min = 2.0
+        self.eta_max = 5
+
+        # Cuts applied to edge construction
+        self.phi_slope_max = 0.0006
+        self.z0_max = 150
+
         super(TrackMLParticleTrackingDataset, self).__init__(root, transform)
+
 
     @property
     def raw_file_names(self):
-        # event_indices = ['000001000']
         event_indices = self.events
         file_names = []
         file_names += [f'event{idx}-cells.csv' for idx in event_indices]
@@ -50,6 +62,7 @@ class TrackMLParticleTrackingDataset(Dataset):
         file_names += [f'event{idx}-truth.csv' for idx in event_indices]
         return file_names
 
+
     @property
     def processed_file_names(self):
         if not hasattr(self,'processed_files'):
@@ -57,16 +70,20 @@ class TrackMLParticleTrackingDataset(Dataset):
             self.processed_files = [osp.join(self.processed_dir,name) for name in proc_names]
         return self.processed_files
 
+
     def download(self):
         raise RuntimeError(
             'Dataset not found. Please download it from {} and move all '
             '*.csv files to {}'.format(self.url, self.raw_dir))
 
+
     def len(self):
         return len(glob.glob(osp.join(self.raw_dir, 'event*-hits.csv')))
 
+
     def __len__(self):
         return len(glob.glob(osp.join(self.raw_dir, 'event*-hits.csv')))
+
 
     def read_hits(self, idx):
         hits_filename = osp.join(self.raw_dir, f'event{idx}-hits.csv')
@@ -83,6 +100,7 @@ class TrackMLParticleTrackingDataset(Dataset):
             })
         return hits
 
+
     def read_cells(self, idx):
         cells_filename = osp.join(self.raw_dir, f'event{idx}-cells.csv')
         cells = pandas.read_csv(
@@ -94,6 +112,7 @@ class TrackMLParticleTrackingDataset(Dataset):
                 'value': np.float32
             })
         return cells
+
 
     def read_particles(self, idx):
         particles_filename = osp.join(self.raw_dir, f'event{idx}-particles.csv')
@@ -112,6 +131,7 @@ class TrackMLParticleTrackingDataset(Dataset):
             })
         return particles
 
+
     def read_truth(self, idx):
         truth_filename = osp.join(self.raw_dir, f'event{idx}-truth.csv')
         truth = pandas.read_csv(
@@ -129,16 +149,10 @@ class TrackMLParticleTrackingDataset(Dataset):
             })
         return truth
 
+
     def select_hits(self, hits, particles, truth):
         # print('Selecting Hits')
-
-        # cuts applied
-        pt_min = 2.0
-        eta_max = 5
-        volume_layer_id = torch.tensor([[8, 2], [8, 4], [8, 6], [8, 8]])
-
-
-        valid_layer = 20 * volume_layer_id[:,0] + volume_layer_id[:,1]
+        valid_layer = 20 * self.volume_layer_id[:,0] + self.volume_layer_id[:,1]
         hits = (hits[['hit_id', 'x', 'y', 'z', 'volume_id', 'layer_id']]
                 .merge(truth[['hit_id', 'particle_id']], on='hit_id'))
         hits = (hits[['hit_id', 'x', 'y', 'z', 'volume_id', 'layer_id', 'particle_id']]
@@ -154,8 +168,8 @@ class TrackMLParticleTrackingDataset(Dataset):
         particle = torch.from_numpy(hits['particle_id'].values)
 
         layer_mask = torch.from_numpy(np.isin(layer, valid_layer))
-        eta_mask = torch.abs(eta) < eta_max
-        pt_mask = pt > pt_min
+        eta_mask = torch.abs(eta) < self.eta_max
+        pt_mask = pt > self.pt_min
         mask = layer_mask & eta_mask & pt_mask
 
         r = r[mask]
@@ -172,6 +186,82 @@ class TrackMLParticleTrackingDataset(Dataset):
 
         return pos, layer, particle
 
+
+    def compute_edge_index(self, pos, layer):
+        # print("Constructing Edge Index")
+        for (layer1, layer2) in self.layer_pairs:
+            mask1 = layer == layer1
+            mask2 = layer == layer2
+            nnz1 = mask1.nonzero().flatten()
+            nnz2 = mask2.nonzero().flatten()
+
+            dr   = pos[:, 0][mask2].view(1, -1) - pos[:, 0][mask1].view(-1, 1)
+            dphi = pos[:, 1][mask2].view(1, -1) - pos[:, 1][mask1].view(-1, 1)
+            dz   = pos[:, 2][mask2].view(1, -1) - pos[:, 2][mask1].view(-1, 1)
+            dphi[dphi > np.pi] -= 2 * np.pi
+            dphi[dphi < -np.pi] += 2 * np.pi
+
+            phi_slope = dphi / dr
+            z0 = pos[:, 2][mask1].view(-1, 1) - pos[:, 0][mask1].view(-1, 1) * dz / dr
+
+            adj = (phi_slope.abs() < self.phi_slope_max) & (z0.abs() < self.z0_max)
+
+            row, col = adj.nonzero().t()
+            row = nnz1[row]
+            col = nnz2[col]
+            edge_index = torch.stack([row, col], dim=0)
+
+            if (layer1 == 0):
+                edge_indices = edge_index
+            else:
+                edge_indices = torch.cat((edge_indices, edge_index), 1)
+
+        return edge_indices
+
+
+    def compute_y_index(self, edge_indices, particle):
+        # print("Constructing y Index")
+        pid1 = [ particle[i].item() for i in edge_indices[0] ]
+        pid2 = [ particle[i].item() for i in edge_indices[1] ]
+        y = np.zeros(edge_indices.shape[1], dtype=np.int64)
+        for i in range(edge_indices.shape[1]):
+            if pid1[i] == pid2[i]:
+                y[i] = 1
+
+        return torch.from_numpy(y)
+
+
+    def read_event(self, idx):
+        hits      = self.read_hits(idx)
+        # cells     = self.read_cells(idx)
+        particles = self.read_particles(idx)
+        truth     = self.read_truth(idx)
+
+        return hits, particles, truth
+
+    def process(self):
+        for idx in self.events:
+            hits, particles, truth = self.read_event(idx)
+            pos, layer, particle = self.select_hits(hits, particles, truth)
+            edge_index = self.compute_edge_index(pos, layer)
+            y = self.compute_y_index(edge_index, particle)
+
+            # if self.pre_filter is not None and not self.pre_filter(data):
+            #     continue
+            #
+            # if self.pre_transform is not None:
+            #     data = self.pre_transform(data)
+
+            data = Data(x=pos, edge_index=edge_index, y=y)
+            torch.save(data, osp.join(self.processed_dir, 'data_{}.pt'.format(idx)))
+
+    def get(self, idx):
+        data = torch.load(self.processed_files[idx])
+        return data
+
+
+# Legacy Code
+############################################################################
 
     # def read_hits(self, hits_filename, cells_filename):
     #     hits = pandas.read_csv(
@@ -218,57 +308,8 @@ class TrackMLParticleTrackingDataset(Dataset):
     #
     #     return mask, x, pos, layer
 
-    def compute_edge_index(self, pos, layer):
-        # print("Constructing Edge Index")
 
-        # cuts applied
-        phi_slope_max = 0.0006
-        z0_max = 150
-        layer_pairs = torch.tensor([[0, 1], [1, 2], [2, 3]])
-
-        for (layer1, layer2) in layer_pairs:
-            mask1 = layer == layer1
-            mask2 = layer == layer2
-            nnz1 = mask1.nonzero().flatten()
-            nnz2 = mask2.nonzero().flatten()
-
-            dr   = pos[:, 0][mask2].view(1, -1) - pos[:, 0][mask1].view(-1, 1)
-            dphi = pos[:, 1][mask2].view(1, -1) - pos[:, 1][mask1].view(-1, 1)
-            dz   = pos[:, 2][mask2].view(1, -1) - pos[:, 2][mask1].view(-1, 1)
-            dphi[dphi > np.pi] -= 2 * np.pi
-            dphi[dphi < -np.pi] += 2 * np.pi
-
-            phi_slope = dphi / dr
-            z0 = pos[:, 2][mask1].view(-1, 1) - pos[:, 0][mask1].view(-1, 1) * dz / dr
-
-            adj = (phi_slope.abs() < phi_slope_max) & (z0.abs() < z0_max)
-
-            row, col = adj.nonzero().t()
-            row = nnz1[row]
-            col = nnz2[col]
-            edge_index = torch.stack([row, col], dim=0)
-
-            if (layer1 == 0):
-                edge_indices = edge_index
-            else:
-                edge_indices = torch.cat((edge_indices, edge_index), 1)
-
-        return edge_indices
-
-
-
-    def compute_y_index(self, edge_indices, particle):
-        # print("Constructing y Index")
-
-        pid1 = [ particle[i].item() for i in edge_indices[0] ]
-        pid2 = [ particle[i].item() for i in edge_indices[1] ]
-        y = np.zeros(edge_indices.shape[1], dtype=np.int64)
-        for i in range(edge_indices.shape[1]):
-            if pid1[i] == pid2[i]:
-                y[i] = 1
-
-        return torch.from_numpy(y)
-
+    # def compute_edge_index(self, pos, layer):
         # r = pos[:, 0]
         # phi = pos[:, 1]
         # z = pos[:,2]
@@ -380,18 +421,8 @@ class TrackMLParticleTrackingDataset(Dataset):
         # particle_id = particle_id.unique(return_inverse=True)[1].sub_(1)
         # weight = torch.from_numpy(y['weight'].values).to(torch.float)
 
-    def read_event(self, idx):
-        #idx = self.events[idx]
+    # def read_event(self, idx):
 
-        # print('reading event' + str(idx))
-
-        hits      = self.read_hits(idx)
-        # cells     = self.read_cells(idx)
-        particles = self.read_particles(idx)
-        truth     = self.read_truth(idx)
-
-        # return hits, cells, particles, truth
-        return hits, particles, truth
         # hits_filename = osp.join(self.raw_dir, f'event{idx}-hits.csv')
         # cells_filename = osp.join(self.raw_dir, f'event{idx}-cells.csv')
         # mask, x, pos, layer = self.read_hits(hits_filename, cells_filename)
@@ -478,40 +509,3 @@ class TrackMLParticleTrackingDataset(Dataset):
         # y_index = torch.stack([particle_id, hit_id], dim=0)
         #
         # return TrackingData(x=x, pos=pos, y_index=y_index, y_weight=weight)
-
-
-
-    def process(self):
-        for idx in self.events:
-            # Read data from `raw_path`.
-            hits, particles, truth = self.read_event(idx)
-            # print('Number of hits in raw data: ' + str(hits.shape[0]))
-
-            # Extract desired nodes
-            pos, layer, particle = self.select_hits(hits, particles, truth)
-            # print('Number of hits selected: ' + str(pos.size()[0]))
-
-            # Construct Edges
-            edge_index = self.compute_edge_index(pos, layer)
-            # print('Total Number of edges constructed: ' + str(edge_index.shape[1]))
-
-            # Construct target index
-            y = self.compute_y_index(edge_index, particle)
-            # print('Number of true edges constructed: ' + str(y.sum().item()))
-
-            data = Data(x=pos, edge_index=edge_index, y=y)
-
-            # if self.pre_filter is not None and not self.pre_filter(data):
-            #     continue
-            #
-            # if self.pre_transform is not None:
-            #     data = self.pre_transform(data)
-            #
-            torch.save(data, osp.join(self.processed_dir, 'data_{}.pt'.format(idx)))
-            # data_list.append(data)
-            print('')
-        # torch.save(self.collate(data_list), self.processed_paths[0])
-
-    def get(self, idx):
-        data = torch.load(self.processed_files[idx])
-        return data

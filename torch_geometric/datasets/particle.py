@@ -4,9 +4,9 @@ import glob
 import torch
 import pandas
 import numpy as np
-from torch_scatter import scatter_add
-from torch_geometric.data import Data, Dataset, InMemoryDataset
-from torch_geometric.utils import degree
+# from torch_scatter import scatter_add
+from torch_geometric.data import Data, Dataset
+# from torch_geometric.utils import degree
 
 # class TrackingData(Data):
 #     def __inc__(self, key, item):
@@ -17,7 +17,6 @@ from torch_geometric.utils import degree
 
 
 class TrackMLParticleTrackingDataset(Dataset):
-# class TrackMLParticleTrackingDataset(InMemoryDataset):
     r"""The `TrackML Particle Tracking Challenge
     <https://www.kaggle.com/c/trackml-particle-identification>`_ dataset to
     reconstruct particle tracks from 3D points left in the silicon detectors.
@@ -54,13 +53,9 @@ class TrackMLParticleTrackingDataset(Dataset):
 
     @property
     def raw_file_names(self):
-        event_indices = self.events
-        file_names = []
-        file_names += [f'event{idx}-cells.csv' for idx in event_indices]
-        file_names += [f'event{idx}-hits.csv' for idx in event_indices]
-        file_names += [f'event{idx}-particles.csv' for idx in event_indices]
-        file_names += [f'event{idx}-truth.csv' for idx in event_indices]
-        return file_names
+        if not hasattr(self,'input_files'):
+            self.input_files = sorted(glob.glob(self.raw_dir+'/*.csv'))
+        return [f.split('/')[-1] for f in self.input_files]
 
 
     @property
@@ -239,6 +234,7 @@ class TrackMLParticleTrackingDataset(Dataset):
 
         return hits, particles, truth
 
+
     def process(self):
         for idx in self.events:
             hits, particles, truth = self.read_event(idx)
@@ -254,6 +250,7 @@ class TrackMLParticleTrackingDataset(Dataset):
 
             data = Data(x=pos, edge_index=edge_index, y=y)
             torch.save(data, osp.join(self.processed_dir, 'data_{}.pt'.format(idx)))
+
 
     def get(self, idx):
         data = torch.load(self.processed_files[idx])

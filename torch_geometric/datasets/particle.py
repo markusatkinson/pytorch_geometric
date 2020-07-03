@@ -8,16 +8,16 @@ from torch_scatter import scatter_add
 from torch_geometric.data import Data, Dataset, InMemoryDataset
 from torch_geometric.utils import degree
 
-class TrackingData(Data):
-    def __inc__(self, key, item):
-        if key == 'y_index':
-            return torch.tensor([item[0].max().item() + 1, self.num_nodes])
-        else:
-            return super(TrackingData, self).__inc__(key, item)
+# class TrackingData(Data):
+#     def __inc__(self, key, item):
+#         if key == 'y_index':
+#             return torch.tensor([item[0].max().item() + 1, self.num_nodes])
+#         else:
+#             return super(TrackingData, self).__inc__(key, item)
 
 
-# class TrackMLParticleTrackingDataset(Dataset):
-class TrackMLParticleTrackingDataset(InMemoryDataset):
+class TrackMLParticleTrackingDataset(Dataset):
+# class TrackMLParticleTrackingDataset(InMemoryDataset):
     r"""The `TrackML Particle Tracking Challenge
     <https://www.kaggle.com/c/trackml-particle-identification>`_ dataset to
     reconstruct particle tracks from 3D points left in the silicon detectors.
@@ -33,12 +33,16 @@ class TrackMLParticleTrackingDataset(InMemoryDataset):
     url = 'https://www.kaggle.com/c/trackml-particle-identification'
 
     def __init__(self, root, transform=None):
+        events = glob.glob(osp.join(osp.join(root, 'raw'), 'event*-hits.csv'))
+        events = [e.split(osp.sep)[-1].split('-')[0][5:] for e in events]
+        self.events = sorted(events)
+
         super(TrackMLParticleTrackingDataset, self).__init__(root, transform)
 
     @property
     def raw_file_names(self):
-        event_indices = ['000001000']
-        # event_indices = self.events
+        # event_indices = ['000001000']
+        event_indices = self.events
         file_names = []
         file_names += [f'event{idx}-cells.csv' for idx in event_indices]
         file_names += [f'event{idx}-hits.csv' for idx in event_indices]
@@ -49,7 +53,7 @@ class TrackMLParticleTrackingDataset(InMemoryDataset):
     @property
     def processed_file_names(self):
         if not hasattr(self,'processed_files'):
-            proc_names = ['data_{}.pt'.format(idx) for idx in range(len(self.raw_file_names))]
+            proc_names = ['data_{}.pt'.format(idx) for idx in self.events]
             self.processed_files = [osp.join(self.processed_dir,name) for name in proc_names]
         return self.processed_files
 
@@ -59,6 +63,9 @@ class TrackMLParticleTrackingDataset(InMemoryDataset):
             '*.csv files to {}'.format(self.url, self.raw_dir))
 
     def len(self):
+        return len(glob.glob(osp.join(self.raw_dir, 'event*-hits.csv')))
+
+    def __len__(self):
         return len(glob.glob(osp.join(self.raw_dir, 'event*-hits.csv')))
 
     def read_hits(self, idx):
@@ -123,7 +130,7 @@ class TrackMLParticleTrackingDataset(InMemoryDataset):
         return truth
 
     def select_hits(self, hits, particles, truth):
-        print('Selecting Hits')
+        # print('Selecting Hits')
 
         # cuts applied
         pt_min = 2.0
@@ -212,7 +219,7 @@ class TrackMLParticleTrackingDataset(InMemoryDataset):
     #     return mask, x, pos, layer
 
     def compute_edge_index(self, pos, layer):
-        print("Constructing Edge Index")
+        # print("Constructing Edge Index")
 
         # cuts applied
         phi_slope_max = 0.0006
@@ -251,11 +258,11 @@ class TrackMLParticleTrackingDataset(InMemoryDataset):
 
 
     def compute_y_index(self, edge_indices, particle):
-        print("Constructing y Index")
+        # print("Constructing y Index")
 
         pid1 = [ particle[i].item() for i in edge_indices[0] ]
         pid2 = [ particle[i].item() for i in edge_indices[1] ]
-        y = np.zeros(edge_indices.shape[1], dtype=np.uint8)
+        y = np.zeros(edge_indices.shape[1], dtype=np.int64)
         for i in range(edge_indices.shape[1]):
             if pid1[i] == pid2[i]:
                 y[i] = 1
@@ -376,7 +383,7 @@ class TrackMLParticleTrackingDataset(InMemoryDataset):
     def read_event(self, idx):
         #idx = self.events[idx]
 
-        print('reading event' + str(idx))
+        # print('reading event' + str(idx))
 
         hits      = self.read_hits(idx)
         # cells     = self.read_cells(idx)
@@ -475,30 +482,24 @@ class TrackMLParticleTrackingDataset(InMemoryDataset):
 
 
     def process(self):
-
-        events = glob.glob(osp.join(self.raw_dir, 'event*-hits.csv'))
-        events = [e.split(osp.sep)[-1].split('-')[0][5:] for e in events]
-        self.events = sorted(events)
-
-        data_list = []
         for idx in self.events:
             # Read data from `raw_path`.
             hits, particles, truth = self.read_event(idx)
-            print('Number of hits in raw data: ' + str(hits.shape[0]))
+            # print('Number of hits in raw data: ' + str(hits.shape[0]))
 
             # Extract desired nodes
             pos, layer, particle = self.select_hits(hits, particles, truth)
-            print('Number of hits selected: ' + str(pos.size()[0]))
+            # print('Number of hits selected: ' + str(pos.size()[0]))
 
             # Construct Edges
             edge_index = self.compute_edge_index(pos, layer)
-            print('Total Number of edges constructed: ' + str(edge_index.shape[1]))
+            # print('Total Number of edges constructed: ' + str(edge_index.shape[1]))
 
             # Construct target index
             y = self.compute_y_index(edge_index, particle)
-            print('Number of true edges constructed: ' + str(y.sum().item()))
+            # print('Number of true edges constructed: ' + str(y.sum().item()))
 
-            data = Data(edge_index=edge_index, y=y, pos=pos)
+            data = Data(x=pos, edge_index=edge_index, y=y)
 
             # if self.pre_filter is not None and not self.pre_filter(data):
             #     continue
@@ -506,10 +507,11 @@ class TrackMLParticleTrackingDataset(InMemoryDataset):
             # if self.pre_transform is not None:
             #     data = self.pre_transform(data)
             #
-            data_list.append(data)
+            torch.save(data, osp.join(self.processed_dir, 'data_{}.pt'.format(idx)))
+            # data_list.append(data)
             print('')
-        torch.save(self.collate(data_list), self.processed_paths[0])
-
+        # torch.save(self.collate(data_list), self.processed_paths[0])
 
     def get(self, idx):
-        return self.read_event(idx)
+        data = torch.load(self.processed_files[idx])
+        return data

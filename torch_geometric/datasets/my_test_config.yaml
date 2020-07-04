@@ -76,11 +76,11 @@ selection:
                        [9,2], [9,4], [9,6], [9,8], [9,10], [9,12], [9,14],     #front endcap
                        [7,2], [7,4], [7,6], [7,8], [7,10], [7,12], [7,14]]     #back endcap
 
-    layer_pairs : [[0, 1], [1, 2], [2, 3],                                     #barrel
-                   [0, 4], [1, 4], [2, 4], [3, 4],                             #barrel to front endcap
-                   [4, 5], [5, 6], [6, 7], [7, 8], [8, 9], [9, 10],            #front endcap
-                   [0, 17], [1, 17], [2, 17], [3, 17],                         #barrel to back endcap
-                   [17, 16], [16, 15], [15, 14], [14, 13], [13, 12], [12, 11]] #back endcap
+    layer_pairs : [[7, 8], [8, 9], [9, 10],                                     #barrel
+                   [7, 11], [8, 11], [9, 11],                                   #barrel to front endcap
+                   [11, 12], [12, 13], [13, 14], [14, 15], [15, 16], [16, 17],  #front endcap
+                   [7, 6], [8, 6], [9, 6],                                      #barrel to back endcap
+                   [6, 5], [5, 4], [4, 3], [3, 2], [2, 1], [1, 0]]              #back endcap
 
     # ATLAS Geometry
     # volume_layer_ids: [[80,0], [81,0], [82,0], [83,0], [84,0],                 #Inner Barrel

@@ -40,6 +40,7 @@ class TrackMLParticleTrackingDataset(Dataset):
 
         n_eta_sections (int): Break the graph into multiple segments in the eta direction.
 
+        augments (bool): Toggle for turning data augmentation on and off
     """
 
     url = 'https://www.kaggle.com/c/trackml-particle-identification'
@@ -49,7 +50,8 @@ class TrackMLParticleTrackingDataset(Dataset):
                  layer_pairs=[[0, 1], [1, 2], [2, 3]],              #Connected Layers
                  pt_min=2.0, eta_range=[-5, 5],                     #Node Cuts
                  phi_slope_max=0.0006, z0_max=150,                  #Edge Cuts
-                 n_phi_sections=1, n_eta_sections=1                 #N Sections
+                 n_phi_sections=1, n_eta_sections=1,                 #N Sections
+                 augments=False
                  ):
         events = glob.glob(osp.join(osp.join(root, 'raw'), 'event*-hits.csv'))
         events = [e.split(osp.sep)[-1].split('-')[0][5:] for e in events]
@@ -63,6 +65,7 @@ class TrackMLParticleTrackingDataset(Dataset):
         self.z0_max           = z0_max
         self.n_phi_sections   = n_phi_sections
         self.n_eta_sections   = n_eta_sections
+        self.augments         = augments
 
         super(TrackMLParticleTrackingDataset, self).__init__(root, transform)
 
@@ -78,6 +81,9 @@ class TrackMLParticleTrackingDataset(Dataset):
     def processed_file_names(self):
         if not hasattr(self,'processed_files'):
             proc_names = ['data_{}.pt'.format(idx) for idx in self.events]
+            if(self.augments):
+                proc_names_aug = ['data_{}_aug.pt'.format(idx) for idx in self.events]
+                proc_names += proc_names_aug
             self.processed_files = [osp.join(self.processed_dir,name) for name in proc_names]
         return self.processed_files
 
@@ -89,11 +95,15 @@ class TrackMLParticleTrackingDataset(Dataset):
 
 
     def len(self):
-        return len(glob.glob(osp.join(self.raw_dir, 'event*-hits.csv')))
+        N_events = len(glob.glob(osp.join(self.raw_dir, 'event*-hits.csv')))
+        N_augments = 2 if self.augments else 1
+        return N_events*self.n_phi_sections*self.n_eta_sections*N_augments
 
 
     def __len__(self):
-        return len(glob.glob(osp.join(self.raw_dir, 'event*-hits.csv')))
+        N_events = len(glob.glob(osp.join(self.raw_dir, 'event*-hits.csv')))
+        N_augments = 2 if self.augments else 1
+        return N_events*self.n_phi_sections*self.n_eta_sections*N_augments
 
 
     def read_hits(self, idx):
@@ -255,6 +265,7 @@ class TrackMLParticleTrackingDataset(Dataset):
         for idx in self.events:
             hits, particles, truth = self.read_event(idx)
             pos, layer, particle = self.select_hits(hits, particles, truth)
+            # self.n_features = 3
             edge_index = self.compute_edge_index(pos, layer)
             y = self.compute_y_index(edge_index, particle)
 
@@ -267,6 +278,10 @@ class TrackMLParticleTrackingDataset(Dataset):
             data = Data(x=pos, edge_index=edge_index, y=y)
             torch.save(data, osp.join(self.processed_dir, 'data_{}.pt'.format(idx)))
 
+            if (self.augments):
+                pos[:,1]=-pos[:,1]
+                data_aug = Data(x=pos, edge_index=edge_index, y=y)
+                torch.save(data, osp.join(self.processed_dir, 'data_{}_aug.pt'.format(idx)))
 
     def get(self, idx):
         data = torch.load(self.processed_files[idx])

@@ -1,4 +1,5 @@
 from particle import TrackMLParticleTrackingDataset
+from torch_geometric.data import Data, Dataset, InMemoryDataset
 import argparse
 import yaml
 
@@ -26,7 +27,9 @@ def main():
                                                   pt_min=selection['pt_min'],
                                                   eta_range=selection['eta_range'],
                                                   phi_slope_max=selection['phi_slope_max'],
-                                                  z0_max=selection['z0_max'])
+                                                  z0_max=selection['z0_max'],
+                                                  augments=selection['construct_augmented_graphs']
+                                                  )
     # print(trackml_data.raw_file_names)
     # print(trackml_data.processed_file_names)
     # print(trackml_data.input_files)
@@ -37,8 +40,16 @@ def main():
     # print(trackml_data.phi_slope_max)
     # print(trackml_data.z0_max)
 
-    trackml_data.process()
+    print(trackml_data.augments)
+    # trackml_data.process()
+    print(trackml_data.processed_file_names)
 
+    print(trackml_data[50])
+    print(trackml_data[51])
+    print(trackml_data[150])
+    print(trackml_data[151])
+    print(trackml_data.num_features)
+    # print(trackml_data.processed_file_names)
 
 if __name__ == '__main__':
     main()

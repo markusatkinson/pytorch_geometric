@@ -41,6 +41,10 @@ class TrackMLParticleTrackingDataset(Dataset):
         n_eta_sections (int): Break the graph into multiple segments in the eta direction.
 
         augments (bool): Toggle for turning data augmentation on and off
+
+        intersect (bool): Toggle for interseting lines cut. When connecting Barrel
+            edges to the inner most endcap layer, sometimes the edge passes through
+            the layer above, this cut removes though edges.
     """
 
     url = 'https://www.kaggle.com/c/trackml-particle-identification'
@@ -51,7 +55,7 @@ class TrackMLParticleTrackingDataset(Dataset):
                  pt_min=2.0, eta_range=[-5, 5],                     #Node Cuts
                  phi_slope_max=0.0006, z0_max=150,                  #Edge Cuts
                  n_phi_sections=1, n_eta_sections=1,                 #N Sections
-                 augments=False
+                 augments=False, intersect=False
                  ):
         events = glob.glob(osp.join(osp.join(root, 'raw'), 'event*-hits.csv'))
         events = [e.split(osp.sep)[-1].split('-')[0][5:] for e in events]
@@ -66,6 +70,7 @@ class TrackMLParticleTrackingDataset(Dataset):
         self.n_phi_sections   = n_phi_sections
         self.n_eta_sections   = n_eta_sections
         self.augments         = augments
+        self.intersect        = intersect
 
         super(TrackMLParticleTrackingDataset, self).__init__(root, transform)
 
@@ -83,7 +88,7 @@ class TrackMLParticleTrackingDataset(Dataset):
             proc_names = ['data_{}.pt'.format(idx) for idx in self.events]
             if(self.augments):
                 proc_names_aug = ['data_{}_aug.pt'.format(idx) for idx in self.events]
-                proc_names += proc_names_aug
+                proc_names = [x for y in zip(proc_names, proc_names_aug) for x in y]
             self.processed_files = [osp.join(self.processed_dir,name) for name in proc_names]
         return self.processed_files
 
@@ -222,10 +227,27 @@ class TrackMLParticleTrackingDataset(Dataset):
             dphi[dphi > np.pi] -= 2 * np.pi
             dphi[dphi < -np.pi] += 2 * np.pi
 
+            # Calculate phi_slope and z0 which will be cut on
             phi_slope = dphi / dr
             z0 = pos[:, 2][mask1].view(-1, 1) - pos[:, 0][mask1].view(-1, 1) * dz / dr
 
-            adj = (phi_slope.abs() < self.phi_slope_max) & (z0.abs() < self.z0_max)
+            # Check for intersecting edges between barral and endcap connections
+            intersected_layer = dr.abs() < -1
+            if (self.intersect):
+                z_avg = pos[:, 2][mask2].mean().abs()
+                inner_endcap = (z_avg > 599) & (z_avg < 601)
+                if (inner_endcap):
+                    r_avg = pos[:, 0][mask1].mean()
+                    lowest_layer = (r_avg > 31) & (r_avg < 33)
+                    second_layer = (r_avg > 71) & (r_avg < 73)
+                    if(lowest_layer):
+                        z_int =  71.56298065185547 * dz / dr + z0
+                        intersected_layer = z_int.abs() < 490.975
+                    elif (second_layer):
+                        z_int = 115.37811279296875 * dz / dr + z0
+                        intersected_layer = z_int.abs() < 490.975
+
+            adj = (phi_slope.abs() < self.phi_slope_max) & (z0.abs() < self.z0_max) & (intersected_layer == False)
 
             row, col = adj.nonzero().t()
             row = nnz1[row]
@@ -265,7 +287,6 @@ class TrackMLParticleTrackingDataset(Dataset):
         for idx in self.events:
             hits, particles, truth = self.read_event(idx)
             pos, layer, particle = self.select_hits(hits, particles, truth)
-            # self.n_features = 3
             edge_index = self.compute_edge_index(pos, layer)
             y = self.compute_y_index(edge_index, particle)
 

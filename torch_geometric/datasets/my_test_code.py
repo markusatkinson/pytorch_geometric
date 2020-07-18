@@ -28,7 +28,8 @@ def main():
                                                   eta_range=selection['eta_range'],
                                                   phi_slope_max=selection['phi_slope_max'],
                                                   z0_max=selection['z0_max'],
-                                                  augments=selection['construct_augmented_graphs']
+                                                  augments=selection['construct_augmented_graphs'],
+                                                  intersect=selection['remove_intersecting_edges'],
                                                   )
     # print(trackml_data.raw_file_names)
     # print(trackml_data.processed_file_names)
@@ -41,14 +42,15 @@ def main():
     # print(trackml_data.z0_max)
 
     print(trackml_data.augments)
-    # trackml_data.process()
-    print(trackml_data.processed_file_names)
+    print(trackml_data.intersect)
+    trackml_data.process()
+    # print(trackml_data.processed_file_names)
 
     print(trackml_data[50])
     print(trackml_data[51])
     print(trackml_data[150])
     print(trackml_data[151])
-    print(trackml_data.num_features)
+    # print(trackml_data.num_features)
     # print(trackml_data.processed_file_names)
 
 if __name__ == '__main__':

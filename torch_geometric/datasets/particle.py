@@ -4,6 +4,7 @@ import glob
 import torch
 import pandas
 import numpy as np
+import matplotlib.pyplot as plt
 from torch_geometric.data import Data, Dataset
 
 
@@ -54,7 +55,7 @@ class TrackMLParticleTrackingDataset(Dataset):
                  layer_pairs=[[0, 1], [1, 2], [2, 3]],              #Connected Layers
                  pt_min=2.0, eta_range=[-5, 5],                     #Node Cuts
                  phi_slope_max=0.0006, z0_max=150,                  #Edge Cuts
-                 n_phi_sections=1, n_eta_sections=1,                 #N Sections
+                 n_phi_sections=1, n_eta_sections=1,                #N Sections
                  augments=False, intersect=False
                  ):
         events = glob.glob(osp.join(osp.join(root, 'raw'), 'event*-hits.csv'))
@@ -84,10 +85,11 @@ class TrackMLParticleTrackingDataset(Dataset):
 
     @property
     def processed_file_names(self):
+        N_sections = self.n_phi_sections*self.n_eta_sections
         if not hasattr(self,'processed_files'):
-            proc_names = ['data_{}.pt'.format(idx) for idx in self.events]
+            proc_names = ['event{}_section{}.pt'.format(idx, i) for idx in self.events for i in range(N_sections)]
             if(self.augments):
-                proc_names_aug = ['data_{}_aug.pt'.format(idx) for idx in self.events]
+                proc_names_aug = ['event{}_section{}_aug.pt'.format(idx, i) for idx in self.events for i in range(N_sections)]
                 proc_names = [x for y in zip(proc_names, proc_names_aug) for x in y]
             self.processed_files = [osp.join(self.processed_dir,name) for name in proc_names]
         return self.processed_files
@@ -205,16 +207,20 @@ class TrackMLParticleTrackingDataset(Dataset):
         pos = torch.stack([r, phi, z], 1)
         layer = layer[mask].unique(return_inverse=True)[1]
         particle = particle[mask]
+        eta = eta[mask]
 
         layer, indices = torch.sort(layer)
         pos = pos[indices]
         particle = particle[indices]
+        eta = eta[indices]
 
-        return pos, layer, particle
+        return pos, layer, particle, eta
 
 
     def compute_edge_index(self, pos, layer):
         # print("Constructing Edge Index")
+        edge_indices = torch.empty(2,0, dtype=torch.long)
+
         for (layer1, layer2) in self.layer_pairs:
             mask1 = layer == layer1
             mask2 = layer == layer2
@@ -231,7 +237,7 @@ class TrackMLParticleTrackingDataset(Dataset):
             phi_slope = dphi / dr
             z0 = pos[:, 2][mask1].view(-1, 1) - pos[:, 0][mask1].view(-1, 1) * dz / dr
 
-            # Check for intersecting edges between barral and endcap connections
+            # Check for intersecting edges between barrel and endcap connections
             intersected_layer = dr.abs() < -1
             if (self.intersect):
                 z_avg = pos[:, 2][mask2].mean().abs()
@@ -254,10 +260,7 @@ class TrackMLParticleTrackingDataset(Dataset):
             col = nnz2[col]
             edge_index = torch.stack([row, col], dim=0)
 
-            if (layer1 == self.layer_pairs[0,0]):
-                edge_indices = edge_index
-            else:
-                edge_indices = torch.cat((edge_indices, edge_index), 1)
+            edge_indices = torch.cat((edge_indices, edge_index), 1)
 
         return edge_indices
 
@@ -274,6 +277,33 @@ class TrackMLParticleTrackingDataset(Dataset):
         return torch.from_numpy(y)
 
 
+
+    def split_detector_sections(self, pos, layer, particle, eta, phi_edges, eta_edges):
+        pos_sect, layer_sect, particle_sect = [], [], []
+
+        for i in range(len(phi_edges) - 1):
+            phi_mask1 = pos[:,1] > phi_edges[i]
+            phi_mask2 = pos[:,1] < phi_edges[i+1]
+            phi_mask  = phi_mask1 & phi_mask2
+            phi_pos      = pos[phi_mask]
+            phi_layer    = layer[phi_mask]
+            phi_particle = particle[phi_mask]
+            phi_eta      = eta[phi_mask]
+
+            for j in range(len(eta_edges) - 1):
+                eta_mask1 = phi_eta > eta_edges[j]
+                eta_mask2 = phi_eta < eta_edges[j+1]
+                eta_mask  = eta_mask1 & eta_mask2
+                phi_eta_pos = phi_pos[eta_mask]
+                phi_eta_layer = phi_layer[eta_mask]
+                phi_eta_particle = phi_particle[eta_mask]
+                pos_sect.append(phi_eta_pos)
+                layer_sect.append(phi_eta_layer)
+                particle_sect.append(phi_eta_particle)
+
+        return pos_sect, layer_sect, particle_sect
+
+
     def read_event(self, idx):
         hits      = self.read_hits(idx)
         # cells     = self.read_cells(idx)
@@ -286,9 +316,23 @@ class TrackMLParticleTrackingDataset(Dataset):
     def process(self):
         for idx in self.events:
             hits, particles, truth = self.read_event(idx)
-            pos, layer, particle = self.select_hits(hits, particles, truth)
-            edge_index = self.compute_edge_index(pos, layer)
-            y = self.compute_y_index(edge_index, particle)
+            pos, layer, particle, eta = self.select_hits(hits, particles, truth)
+
+            phi_edges = np.linspace(*(-np.pi, np.pi), num=self.n_phi_sections+1)
+            eta_edges = np.linspace(*self.eta_range, num=self.n_eta_sections+1)
+            pos_sect, layer_sect, particle_sect = self.split_detector_sections(pos, layer, particle, eta, phi_edges, eta_edges)
+
+            for i in range(len(pos_sect)):
+                edge_index = self.compute_edge_index(pos_sect[i], layer_sect[i])
+                y = self.compute_y_index(edge_index, particle_sect[i])
+
+                data = Data(x=pos_sect[i], edge_index=edge_index, y=y)
+                torch.save(data, osp.join(self.processed_dir, 'event{}_section{}.pt'.format(idx, i)))
+
+                if (self.augments):
+                    pos_sect[i][:,1]=-pos_sect[i][:,1]
+                    data_aug = Data(x=pos_sect[i], edge_index=edge_index, y=y)
+                    torch.save(data_aug, osp.join(self.processed_dir, 'event{}_section{}_aug.pt'.format(idx, i)))
 
             # if self.pre_filter is not None and not self.pre_filter(data):
             #     continue
@@ -296,14 +340,60 @@ class TrackMLParticleTrackingDataset(Dataset):
             # if self.pre_transform is not None:
             #     data = self.pre_transform(data)
 
-            data = Data(x=pos, edge_index=edge_index, y=y)
-            torch.save(data, osp.join(self.processed_dir, 'data_{}.pt'.format(idx)))
-
-            if (self.augments):
-                pos[:,1]=-pos[:,1]
-                data_aug = Data(x=pos, edge_index=edge_index, y=y)
-                torch.save(data, osp.join(self.processed_dir, 'data_{}_aug.pt'.format(idx)))
 
     def get(self, idx):
         data = torch.load(self.processed_files[idx])
         return data
+
+
+    def draw(self, idx):
+        width1 = .1
+        width2 = .2
+        points = .25
+
+        X = self[idx].x.cpu().numpy()
+        index = self[idx].edge_index.cpu().numpy()
+        y = self[idx].y.cpu().numpy()
+        true_index = index[:,y > 0]
+
+        r_co = X[:,0]
+        z_co = X[:,2]
+        x_co = X[:,0]*np.cos(X[:,1])
+        y_co = X[:,0]*np.sin(X[:,1])
+
+        scale = 12*z_co.max()/r_co.max()
+        fig0, (ax0) = plt.subplots(1, 1, dpi=500, figsize=(6, 6))
+        fig1, (ax1) = plt.subplots(1, 1, dpi=500, figsize=(6, 6))
+
+
+        # Adjust axes
+        ax0.set_xlabel('Z [mm]')
+        ax0.set_ylabel('R [mm]')
+        ax0.set_xlim(-1.1*np.abs(z_co).max(), 1.1*np.abs(z_co).max())
+        ax0.set_ylim(0, 1.1*r_co.max())
+        ax1.set_xlabel('X [mm]')
+        ax1.set_ylabel('Y [mm]')
+        ax1.set_xlim(-1.1*r_co.max(), 1.1*r_co.max())
+        ax1.set_ylim(-1.1*r_co.max(), 1.1*r_co.max())
+
+        #plot points
+        ax0.scatter(z_co, r_co, s=points, c='k')
+        ax1.scatter(x_co, y_co, s=points, c='k')
+
+        ax0.plot([z_co[index[0]], z_co[index[1]]],
+                 [r_co[index[0]], r_co[index[1]]],
+                 '-', c='blue', linewidth=width1)
+        ax0.plot([z_co[true_index[0]], z_co[true_index[1]]],
+                 [r_co[true_index[0]], r_co[true_index[1]]],
+                 '-', c='black', linewidth=width2)
+        ax1.plot([x_co[index[0]], x_co[index[1]]],
+                 [y_co[index[0]], y_co[index[1]]],
+                 '-', c='blue', linewidth=width1)
+        ax1.plot([x_co[true_index[0]], x_co[true_index[1]]],
+                 [y_co[true_index[0]], y_co[true_index[1]]],
+                 '-', c='black', linewidth=width2)
+
+        fig0_name = self.processed_files[idx].split('.')[0] + '_rz.png'
+        fig1_name = self.processed_files[idx].split('.')[0] + '_xy.png'
+        fig0.savefig(fig0_name)
+        fig1.savefig(fig1_name)

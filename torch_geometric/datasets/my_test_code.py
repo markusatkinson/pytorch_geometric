@@ -1,5 +1,5 @@
 from particle import TrackMLParticleTrackingDataset
-from torch_geometric.data import Data, Dataset, InMemoryDataset
+from torch_geometric.data import Data, Dataset
 import argparse
 import yaml
 
@@ -26,14 +26,15 @@ def main():
                                                   layer_pairs=selection['layer_pairs'],
                                                   pt_min=selection['pt_min'],
                                                   eta_range=selection['eta_range'],
-                                                  # phi_slope_max=selection['phi_slope_max'],
-                                                  phi_slope_max=.001,
-                                                  # z0_max=selection['z0_max'],
-                                                  z0_max=150,
+                                                  phi_slope_max=selection['phi_slope_max'],
+                                                  # phi_slope_max=.001,
+                                                  z0_max=selection['z0_max'],
+                                                  # z0_max=150,
                                                   # n_phi_sections=2,
                                                   # n_eta_sections=2,
-                                                  augments=selection['construct_augmented_graphs'],
+                                                  # augments=selection['construct_augmented_graphs'],
                                                   intersect=selection['remove_intersecting_edges'],
+                                                  tracking=True,
                                                   )
     # print(trackml_data.raw_file_names)
     # print(trackml_data.processed_file_names)
@@ -47,20 +48,28 @@ def main():
 
     # print(trackml_data.augments)
     # print(trackml_data.intersect)
-    trackml_data.process()
     # print(trackml_data.processed_file_names)
 
-    print(trackml_data)
+    trackml_data.process()
 
-    print(trackml_data[0])
-    print(trackml_data[1])
-    print(trackml_data[2])
-    print(trackml_data[3])
 
-    trackml_data.draw(0)
-    trackml_data.draw(1)
+    # print(trackml_data)
+    #
+    # print(trackml_data[0])
+    # print(trackml_data[1])
+    # print(trackml_data[2])
+    # print(trackml_data[3])
+    #
+    # trackml_data.draw(0)
+    # trackml_data.draw(1)
     # trackml_data.draw(2)
     # trackml_data.draw(3)
+
+
+    for i in range(len(trackml_data[0].tracks)):
+        print('Track ' + str(i))
+        print(trackml_data[0].tracks[i])
+        print()
 
     # print(trackml_data[50])
     # print(trackml_data[51])

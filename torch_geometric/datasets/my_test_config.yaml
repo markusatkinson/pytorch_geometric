@@ -55,6 +55,7 @@ selection:
 
     #Original cut values used
     # phi_slope_max: 0.0006
+    # z0_max: .inf
     z0_max: 15000
 
     #Cut values used for tuning
@@ -63,7 +64,8 @@ selection:
 
     n_phi_sections: 1
     n_eta_sections: 1
-    eta_range: [-5, 5]
+    # eta_range: [-5, 5]
+    eta_range: [-100, 100]
 
     #Edges between barrel and endcap can intersect intermediate barrel layers
     remove_intersecting_edges: True

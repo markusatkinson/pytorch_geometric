@@ -46,6 +46,8 @@ class TrackMLParticleTrackingDataset(Dataset):
         intersect (bool): Toggle for interseting lines cut. When connecting Barrel
             edges to the inner most endcap layer, sometimes the edge passes through
             the layer above, this cut removes though edges.
+
+        tracking (bool): Toggle for building truth tracks
     """
 
     url = 'https://www.kaggle.com/c/trackml-particle-identification'
@@ -56,7 +58,7 @@ class TrackMLParticleTrackingDataset(Dataset):
                  pt_min=2.0, eta_range=[-5, 5],                     #Node Cuts
                  phi_slope_max=0.0006, z0_max=150,                  #Edge Cuts
                  n_phi_sections=1, n_eta_sections=1,                #N Sections
-                 augments=False, intersect=False
+                 augments=False, intersect=False, tracking=False    #Toggle Switches
                  ):
         events = glob.glob(osp.join(osp.join(root, 'raw'), 'event*-hits.csv'))
         events = [e.split(osp.sep)[-1].split('-')[0][5:] for e in events]
@@ -72,6 +74,7 @@ class TrackMLParticleTrackingDataset(Dataset):
         self.n_eta_sections   = n_eta_sections
         self.augments         = augments
         self.intersect        = intersect
+        self.tracking         = tracking
 
         super(TrackMLParticleTrackingDataset, self).__init__(root, transform)
 
@@ -315,8 +318,13 @@ class TrackMLParticleTrackingDataset(Dataset):
 
     def process(self):
         for idx in self.events:
+            print('processing event_' + str(idx))
             hits, particles, truth = self.read_event(idx)
             pos, layer, particle, eta = self.select_hits(hits, particles, truth)
+
+            tracks = []
+            if(self.tracking):
+                tracks = self.build_tracks(hits, particles, truth)
 
             phi_edges = np.linspace(*(-np.pi, np.pi), num=self.n_phi_sections+1)
             eta_edges = np.linspace(*self.eta_range, num=self.n_eta_sections+1)
@@ -326,12 +334,12 @@ class TrackMLParticleTrackingDataset(Dataset):
                 edge_index = self.compute_edge_index(pos_sect[i], layer_sect[i])
                 y = self.compute_y_index(edge_index, particle_sect[i])
 
-                data = Data(x=pos_sect[i], edge_index=edge_index, y=y)
+                data = Data(x=pos_sect[i], edge_index=edge_index, y=y, tracks=tracks)
                 torch.save(data, osp.join(self.processed_dir, 'event{}_section{}.pt'.format(idx, i)))
 
                 if (self.augments):
                     pos_sect[i][:,1]=-pos_sect[i][:,1]
-                    data_aug = Data(x=pos_sect[i], edge_index=edge_index, y=y)
+                    data_aug = Data(x=pos_sect[i], edge_index=edge_index, y=y, tracks=tracks)
                     torch.save(data_aug, osp.join(self.processed_dir, 'event{}_section{}_aug.pt'.format(idx, i)))
 
             # if self.pre_filter is not None and not self.pre_filter(data):
@@ -347,6 +355,7 @@ class TrackMLParticleTrackingDataset(Dataset):
 
 
     def draw(self, idx):
+        print("Making plots for " + str(self.processed_files[idx]))
         width1 = .1
         width2 = .2
         points = .25
@@ -361,20 +370,21 @@ class TrackMLParticleTrackingDataset(Dataset):
         x_co = X[:,0]*np.cos(X[:,1])
         y_co = X[:,0]*np.sin(X[:,1])
 
-        scale = 12*z_co.max()/r_co.max()
+        # scale = 12*z_co.max()/r_co.max()
         fig0, (ax0) = plt.subplots(1, 1, dpi=500, figsize=(6, 6))
         fig1, (ax1) = plt.subplots(1, 1, dpi=500, figsize=(6, 6))
-
 
         # Adjust axes
         ax0.set_xlabel('Z [mm]')
         ax0.set_ylabel('R [mm]')
         ax0.set_xlim(-1.1*np.abs(z_co).max(), 1.1*np.abs(z_co).max())
-        ax0.set_ylim(0, 1.1*r_co.max())
+        ax0.set_ylim(-1.1*r_co.max(), 1.1*r_co.max())
         ax1.set_xlabel('X [mm]')
         ax1.set_ylabel('Y [mm]')
         ax1.set_xlim(-1.1*r_co.max(), 1.1*r_co.max())
         ax1.set_ylim(-1.1*r_co.max(), 1.1*r_co.max())
+
+        r_co[X[:,1] < 0] *= -1
 
         #plot points
         ax0.scatter(z_co, r_co, s=points, c='k')
@@ -397,3 +407,50 @@ class TrackMLParticleTrackingDataset(Dataset):
         fig1_name = self.processed_files[idx].split('.')[0] + '_xy.png'
         fig0.savefig(fig0_name)
         fig1.savefig(fig1_name)
+
+
+    def build_tracks(self, hits, particles, truth):
+        # print('Building Tracks')
+        valid_layer = 20 * self.volume_layer_ids[:,0] + self.volume_layer_ids[:,1]
+        hits = (hits[['hit_id', 'x', 'y', 'z', 'volume_id', 'layer_id']]
+                .merge(truth[['hit_id', 'particle_id']], on='hit_id'))
+        hits = (hits[['hit_id', 'x', 'y', 'z', 'volume_id', 'layer_id', 'particle_id']]
+                .merge(particles[['particle_id', 'px', 'py', 'pz']], on='particle_id'))
+
+        layer = torch.from_numpy(20 * hits['volume_id'].values + hits['layer_id'].values)
+        r = torch.from_numpy(np.sqrt(hits['x'].values**2 + hits['y'].values**2))
+        phi = torch.from_numpy(np.arctan2(hits['y'].values, hits['x'].values))
+        z = torch.from_numpy(hits['z'].values)
+        theta = torch.atan2(r,z)
+        eta = -1*torch.log(torch.tan(theta/2))
+        pt = torch.from_numpy(np.sqrt(hits['px'].values**2 + hits['py'].values**2))
+        particle = torch.from_numpy(hits['particle_id'].values)
+
+        layer_mask = torch.from_numpy(np.isin(layer, valid_layer))
+        pt_mask = pt > self.pt_min
+        mask = layer_mask & pt_mask
+
+        r = r[mask]
+        phi = phi[mask]
+        z = z[mask]
+        pos = torch.stack([r, phi, z], 1)
+        particle = particle[mask]
+        layer = layer[mask].unique(return_inverse=True)[1]
+
+        particle, indices = torch.sort(particle)
+        particle = particle.unique(return_inverse=True)[1]
+        pos = pos[indices]
+        layer = layer[indices]
+
+        tracks = []
+        for i in range(particle.max()+1):
+            track_pos   = pos[particle == i]
+            track_layer = layer[particle == i]
+            track_layer, indices = torch.sort(track_layer)
+            track_pos = track_pos[indices]
+            track_layer = track_layer[:, None]
+            track = torch.cat((track_pos, track_layer.type(torch.float)), 1)
+
+            tracks.append(track)
+
+        return tracks

@@ -1,6 +1,7 @@
 import os.path as osp
 import glob
 
+import multiprocessing as mp
 from tqdm import tqdm
 import torch
 import pandas
@@ -68,6 +69,8 @@ class TrackMLParticleTrackingDataset(Dataset):
         tracking (bool): Toggle for building truth tracks. Track data is a tensor with
             dimensions (Nx5) with the following columns:
             [r coord, phi coord, z coord, layer index, track number]
+
+        n_workers (int): Number of worker nodes for multiprocessing
     """
 
     url = 'https://www.kaggle.com/c/trackml-particle-identification'
@@ -78,7 +81,8 @@ class TrackMLParticleTrackingDataset(Dataset):
                  pt_min=2.0, eta_range=[-5, 5],                     #Node Cuts
                  phi_slope_max=0.0006, z0_max=150,                  #Edge Cuts
                  n_phi_sections=1, n_eta_sections=1,                #N Sections
-                 augments=False, intersect=False, tracking=False    #Toggle Switches
+                 augments=False, intersect=False, tracking=False,   #Toggle Switches
+                 n_workers=mp.cpu_count()                           #multiprocessing
                  ):
         events = glob.glob(osp.join(osp.join(root, 'raw'), 'event*-hits.csv'))
         events = [e.split(osp.sep)[-1].split('-')[0][5:] for e in events]
@@ -95,6 +99,7 @@ class TrackMLParticleTrackingDataset(Dataset):
         self.augments         = augments
         self.intersect        = intersect
         self.tracking         = tracking
+        self.n_workers        = n_workers
 
         super(TrackMLParticleTrackingDataset, self).__init__(root, transform)
 
@@ -338,35 +343,40 @@ class TrackMLParticleTrackingDataset(Dataset):
 
 
     def process(self):
-        for idx in tqdm(self.events):
-            hits, particles, truth = self.read_event(idx)
-            pos, layer, particle, eta = self.select_hits(hits, particles, truth)
+        print('Constructing Graphs using n_workers = ' + str(self.n_workers))
+        with mp.Pool(processes = self.n_workers) as pool:
+            pool.map(self.process_event, tqdm(self.events))
 
-            tracks = torch.empty(0, dtype=torch.long)
-            if(self.tracking):
-                tracks = self.build_tracks(hits, particles, truth)
 
-            phi_edges = np.linspace(*(-np.pi, np.pi), num=self.n_phi_sections+1)
-            eta_edges = np.linspace(*self.eta_range, num=self.n_eta_sections+1)
-            pos_sect, layer_sect, particle_sect = self.split_detector_sections(pos, layer, particle, eta, phi_edges, eta_edges)
+    def process_event(self, idx):
+        hits, particles, truth = self.read_event(idx)
+        pos, layer, particle, eta = self.select_hits(hits, particles, truth)
 
-            for i in range(len(pos_sect)):
-                edge_index = self.compute_edge_index(pos_sect[i], layer_sect[i])
-                y = self.compute_y_index(edge_index, particle_sect[i])
+        tracks = torch.empty(0, dtype=torch.long)
+        if(self.tracking):
+            tracks = self.build_tracks(hits, particles, truth)
 
-                data = Data(x=pos_sect[i], edge_index=edge_index, y=y, tracks=tracks)
-                torch.save(data, osp.join(self.processed_dir, 'event{}_section{}.pt'.format(idx, i)))
+        phi_edges = np.linspace(*(-np.pi, np.pi), num=self.n_phi_sections+1)
+        eta_edges = np.linspace(*self.eta_range, num=self.n_eta_sections+1)
+        pos_sect, layer_sect, particle_sect = self.split_detector_sections(pos, layer, particle, eta, phi_edges, eta_edges)
 
-                if (self.augments):
-                    pos_sect[i][:,1]=-pos_sect[i][:,1]
-                    data_aug = Data(x=pos_sect[i], edge_index=edge_index, y=y, tracks=tracks)
-                    torch.save(data_aug, osp.join(self.processed_dir, 'event{}_section{}_aug.pt'.format(idx, i)))
+        for i in range(len(pos_sect)):
+            edge_index = self.compute_edge_index(pos_sect[i], layer_sect[i])
+            y = self.compute_y_index(edge_index, particle_sect[i])
 
-            # if self.pre_filter is not None and not self.pre_filter(data):
-            #     continue
-            #
-            # if self.pre_transform is not None:
-            #     data = self.pre_transform(data)
+            data = Data(x=pos_sect[i], edge_index=edge_index, y=y, tracks=tracks)
+            torch.save(data, osp.join(self.processed_dir, 'event{}_section{}.pt'.format(idx, i)))
+
+            if (self.augments):
+                pos_sect[i][:,1]=-pos_sect[i][:,1]
+                data_aug = Data(x=pos_sect[i], edge_index=edge_index, y=y, tracks=tracks)
+                torch.save(data_aug, osp.join(self.processed_dir, 'event{}_section{}_aug.pt'.format(idx, i)))
+
+        # if self.pre_filter is not None and not self.pre_filter(data):
+        #     continue
+        #
+        # if self.pre_transform is not None:
+        #     data = self.pre_transform(data)
 
 
     def get(self, idx):
@@ -375,7 +385,7 @@ class TrackMLParticleTrackingDataset(Dataset):
 
 
     def draw(self, idx):
-        print("Making plots for " + str(self.processed_files[idx]))
+        # print("Making plots for " + str(self.processed_files[idx]))
         width1 = .1
         width2 = .2
         points = .25

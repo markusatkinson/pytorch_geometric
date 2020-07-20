@@ -23,6 +23,12 @@ class TrackMLParticleTrackingDataset(Dataset):
             version. The data object will be transformed before every access.
             (default: :obj:`None`)
 
+        n_events (int): Number of events in the raw folder to process
+
+
+    GRAPH CONSTRUCTION PARAMETERS
+    ###########################################################################
+
         volume_layer_ids (List): List of the volume and layer ids to be included
             in the graph. Layers get indexed by increasing volume and layer id.
             Refer to the following map for the layer indices, and compare them
@@ -64,29 +70,38 @@ class TrackMLParticleTrackingDataset(Dataset):
 
         intersect (bool): Toggle for interseting lines cut. When connecting Barrel
             edges to the inner most endcap layer, sometimes the edge passes through
-            the layer above, this cut removes though edges.
+            the layer above, this cut removes those edges.
 
         tracking (bool): Toggle for building truth tracks. Track data is a tensor with
             dimensions (Nx5) with the following columns:
             [r coord, phi coord, z coord, layer index, track number]
 
+
+    MULTIPROCESSING PARAMETERS
+    ###########################################################################
+
         n_workers (int): Number of worker nodes for multiprocessing
+
+        n_tasks (int): Break the processing into a number of tasks
+
     """
 
     url = 'https://www.kaggle.com/c/trackml-particle-identification'
 
-    def __init__(self, root, transform=None,
+    def __init__(self, root, transform=None, n_events=0,
                  volume_layer_ids=[[8, 2], [8, 4], [8, 6], [8, 8]], #Layers Selected
                  layer_pairs=[[7, 8], [8, 9], [9, 10]],             #Connected Layers
                  pt_min=2.0, eta_range=[-5, 5],                     #Node Cuts
                  phi_slope_max=0.0006, z0_max=150,                  #Edge Cuts
                  n_phi_sections=1, n_eta_sections=1,                #N Sections
                  augments=False, intersect=False, tracking=False,   #Toggle Switches
-                 n_workers=mp.cpu_count()                           #multiprocessing
+                 n_workers=mp.cpu_count(), n_tasks=1                #multiprocessing
                  ):
         events = glob.glob(osp.join(osp.join(root, 'raw'), 'event*-hits.csv'))
         events = [e.split(osp.sep)[-1].split('-')[0][5:] for e in events]
         self.events = sorted(events)
+        if (n_events > 0):
+            self.events = self.events[:n_events]
 
         self.volume_layer_ids = torch.tensor(volume_layer_ids)
         self.layer_pairs      = torch.tensor(layer_pairs)
@@ -100,6 +115,7 @@ class TrackMLParticleTrackingDataset(Dataset):
         self.intersect        = intersect
         self.tracking         = tracking
         self.n_workers        = n_workers
+        self.n_tasks          = n_tasks
 
         super(TrackMLParticleTrackingDataset, self).__init__(root, transform)
 
@@ -342,10 +358,19 @@ class TrackMLParticleTrackingDataset(Dataset):
         return hits, particles, truth
 
 
-    def process(self):
+    def process(self, reprocess=False):
         print('Constructing Graphs using n_workers = ' + str(self.n_workers))
+        task_paths = np.array_split(self.processed_paths, self.n_tasks)
+        for i in range(self.n_tasks):
+            if reprocess or not self.files_exist(task_paths[i]):
+                self.process_task(i)
+
+
+    def process_task(self, idx):
+        print('Running task ' + str(idx))
+        task_events = np.array_split(self.events, self.n_tasks)
         with mp.Pool(processes = self.n_workers) as pool:
-            pool.map(self.process_event, tqdm(self.events))
+            pool.map(self.process_event, tqdm(task_events[idx]))
 
 
     def process_event(self, idx):
@@ -451,8 +476,6 @@ class TrackMLParticleTrackingDataset(Dataset):
         r = torch.from_numpy(np.sqrt(hits['x'].values**2 + hits['y'].values**2))
         phi = torch.from_numpy(np.arctan2(hits['y'].values, hits['x'].values))
         z = torch.from_numpy(hits['z'].values)
-        theta = torch.atan2(r,z)
-        eta = -1*torch.log(torch.tan(theta/2))
         pt = torch.from_numpy(np.sqrt(hits['px'].values**2 + hits['py'].values**2))
         particle = torch.from_numpy(hits['particle_id'].values)
 
@@ -488,3 +511,7 @@ class TrackMLParticleTrackingDataset(Dataset):
             tracks = torch.cat((tracks, track), 0)
 
         return tracks
+
+
+    def files_exist(self, files):
+        return len(files) != 0 and all([osp.exists(f) for f in files])

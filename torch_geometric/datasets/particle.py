@@ -1,6 +1,7 @@
 import os.path as osp
 import glob
 
+from tqdm import tqdm
 import torch
 import pandas
 import numpy as np
@@ -23,8 +24,25 @@ class TrackMLParticleTrackingDataset(Dataset):
 
         volume_layer_ids (List): List of the volume and layer ids to be included
             in the graph. Layers get indexed by increasing volume and layer id.
+            Refer to the following map for the layer indices, and compare them
+            to the chart at https://www.kaggle.com/c/trackml-particle-identification/data
 
-        layer_pairs (List): List of which pairs of layers can have edges between them
+                                            41
+                        34 --- 39            |        42 --- 47
+                                            40
+
+                                            27
+                        18 --- 23            |        28 --- 33
+                                            24
+
+                                            10
+                         0 ---  6            |        11 --- 17
+                                             7
+
+        layer_pairs (List): List of which pairs of layers can have edges between them.
+            Uses the layer indices described above to reference layers.
+            Example for Barrel Only:
+            [[7,8],[8,9],[9,10],[10,24],[24,25],[25,26],[26,27],[27,40],[40,41]]
 
         pt_min (float32): A truth cut applied to reduce the number of nodes in the graph.
             Only nodes associated with particles above this momentum are included.
@@ -47,14 +65,16 @@ class TrackMLParticleTrackingDataset(Dataset):
             edges to the inner most endcap layer, sometimes the edge passes through
             the layer above, this cut removes though edges.
 
-        tracking (bool): Toggle for building truth tracks
+        tracking (bool): Toggle for building truth tracks. Track data is a tensor with
+            dimensions (Nx5) with the following columns:
+            [r coord, phi coord, z coord, layer index, track number]
     """
 
     url = 'https://www.kaggle.com/c/trackml-particle-identification'
 
     def __init__(self, root, transform=None,
                  volume_layer_ids=[[8, 2], [8, 4], [8, 6], [8, 8]], #Layers Selected
-                 layer_pairs=[[0, 1], [1, 2], [2, 3]],              #Connected Layers
+                 layer_pairs=[[7, 8], [8, 9], [9, 10]],             #Connected Layers
                  pt_min=2.0, eta_range=[-5, 5],                     #Node Cuts
                  phi_slope_max=0.0006, z0_max=150,                  #Edge Cuts
                  n_phi_sections=1, n_eta_sections=1,                #N Sections
@@ -204,11 +224,12 @@ class TrackMLParticleTrackingDataset(Dataset):
         pt_mask = pt > self.pt_min
         mask = layer_mask & eta_mask1 & eta_mask2 & pt_mask
 
+        layer = layer.unique(return_inverse=True)[1]
         r = r[mask]
         phi = phi[mask]
         z = z[mask]
         pos = torch.stack([r, phi, z], 1)
-        layer = layer[mask].unique(return_inverse=True)[1]
+        layer = layer[mask]
         particle = particle[mask]
         eta = eta[mask]
 
@@ -317,12 +338,11 @@ class TrackMLParticleTrackingDataset(Dataset):
 
 
     def process(self):
-        for idx in self.events:
-            print('processing event_' + str(idx))
+        for idx in tqdm(self.events):
             hits, particles, truth = self.read_event(idx)
             pos, layer, particle, eta = self.select_hits(hits, particles, truth)
 
-            tracks = []
+            tracks = torch.empty(0, dtype=torch.long)
             if(self.tracking):
                 tracks = self.build_tracks(hits, particles, truth)
 
@@ -429,28 +449,32 @@ class TrackMLParticleTrackingDataset(Dataset):
         layer_mask = torch.from_numpy(np.isin(layer, valid_layer))
         pt_mask = pt > self.pt_min
         mask = layer_mask & pt_mask
+        # mask = pt_mask
 
+        layer = layer.unique(return_inverse=True)[1]
         r = r[mask]
         phi = phi[mask]
         z = z[mask]
         pos = torch.stack([r, phi, z], 1)
         particle = particle[mask]
-        layer = layer[mask].unique(return_inverse=True)[1]
+        layer = layer[mask]
 
         particle, indices = torch.sort(particle)
         particle = particle.unique(return_inverse=True)[1]
         pos = pos[indices]
         layer = layer[indices]
 
-        tracks = []
+        tracks = torch.empty(0,5, dtype=torch.float)
         for i in range(particle.max()+1):
             track_pos   = pos[particle == i]
             track_layer = layer[particle == i]
+            track_particle = particle[particle == i]
             track_layer, indices = torch.sort(track_layer)
             track_pos = track_pos[indices]
             track_layer = track_layer[:, None]
+            track_particle = track_particle[:, None]
             track = torch.cat((track_pos, track_layer.type(torch.float)), 1)
-
-            tracks.append(track)
+            track = torch.cat((track, track_particle.type(torch.float)), 1)
+            tracks = torch.cat((tracks, track), 0)
 
         return tracks

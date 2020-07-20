@@ -2,7 +2,7 @@ from particle import TrackMLParticleTrackingDataset
 from torch_geometric.data import Data, Dataset
 import argparse
 import yaml
-
+import torch
 
 def parse_args():
     """Parse command line arguments."""
@@ -50,7 +50,7 @@ def main():
     # print(trackml_data.intersect)
     # print(trackml_data.processed_file_names)
 
-    trackml_data.process()
+    # trackml_data.process()
 
 
     # print(trackml_data)
@@ -59,16 +59,15 @@ def main():
     # print(trackml_data[1])
     # print(trackml_data[2])
     # print(trackml_data[3])
-    #
+
     # trackml_data.draw(0)
     # trackml_data.draw(1)
     # trackml_data.draw(2)
     # trackml_data.draw(3)
 
-
-    for i in range(len(trackml_data[0].tracks)):
-        print('Track ' + str(i))
-        print(trackml_data[0].tracks[i])
+    for i in range(trackml_data[0].tracks[:,4].max().type(torch.int)+1):
+        track = trackml_data[0].tracks[trackml_data[0].tracks[:,4] == i]
+        print(track)
         print()
 
     # print(trackml_data[50])

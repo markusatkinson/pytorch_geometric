@@ -22,7 +22,7 @@ def main():
         config = yaml.load(f)
         selection = config['selection']
 
-    trackml_data = TrackMLParticleTrackingDataset('/data/gnn_code/trackml-particle-identification/',
+    trackml_data = TrackMLParticleTrackingDataset('/data/gnn_code/training_data/test_geometric',
                                                   volume_layer_ids=selection['volume_layer_ids'],
                                                   layer_pairs=selection['layer_pairs'],
                                                   pt_min=selection['pt_min'],
@@ -36,8 +36,8 @@ def main():
                                                   augments=selection['construct_augmented_graphs'],
                                                   intersect=selection['remove_intersecting_edges'],
                                                   tracking=True,
-                                                  n_workers=25,
-                                                  n_tasks=4,
+                                                  # n_workers=24,
+                                                  n_tasks=10,
                                                   # n_events=10,
                                                   )
     # print(trackml_data.raw_file_names)
@@ -54,8 +54,8 @@ def main():
     # print(trackml_data.intersect)
     # print(trackml_data.processed_file_names)
 
-    trackml_data.process()
-    trackml_data.process(True)
+    # trackml_data.process()
+    # trackml_data.process(True)
 
 
     # print(trackml_data)

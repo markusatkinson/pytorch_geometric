@@ -146,13 +146,13 @@ class TrackMLParticleTrackingDataset(Dataset):
 
 
     def len(self):
-        N_events = len(glob.glob(osp.join(self.raw_dir, 'event*-hits.csv')))
+        N_events = len(self.events)
         N_augments = 2 if self.augments else 1
         return N_events*self.n_phi_sections*self.n_eta_sections*N_augments
 
 
     def __len__(self):
-        N_events = len(glob.glob(osp.join(self.raw_dir, 'event*-hits.csv')))
+        N_events = len(self.events)
         N_augments = 2 if self.augments else 1
         return N_events*self.n_phi_sections*self.n_eta_sections*N_augments
 

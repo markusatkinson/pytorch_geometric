@@ -5,6 +5,7 @@ import yaml
 import torch
 from tqdm import tqdm
 
+
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser('my_test_code.py')
@@ -37,8 +38,10 @@ def main():
                                                   intersect=selection['remove_intersecting_edges'],
                                                   tracking=True,
                                                   # n_workers=24,
-                                                  n_tasks=10,
-                                                  # n_events=10,
+                                                  # n_tasks=10,
+                                                  n_events=10,
+                                                  # directed=True,
+                                                  # layer_pairs_plus=True,
                                                   )
     # print(trackml_data.raw_file_names)
     # print(trackml_data.processed_file_names)
@@ -55,10 +58,8 @@ def main():
     # print(trackml_data.processed_file_names)
 
     # trackml_data.process()
-    # trackml_data.process(True)
+    trackml_data.process(True)
 
-
-    # print(trackml_data)
     #
     # print(trackml_data[0])
     # print(trackml_data[1])
@@ -69,9 +70,29 @@ def main():
     # for i in tqdm(range(len(trackml_data))):
     #     trackml_data.draw(i)
 
+
+
+    for i in range(len(trackml_data)):
+        print(trackml_data[i])
+
+    print()
+
+    trackml_data.shuffle()
+    for i in range(len(trackml_data)):
+        print(trackml_data[i])
+
+    print()
+
+    trackml_data.sort()
+    for i in range(len(trackml_data)):
+        print(trackml_data[i])
+
+
+
     # for i in range(trackml_data[0].tracks[:,4].max().type(torch.int)+1):
     #     track = trackml_data[0].tracks[trackml_data[0].tracks[:,4] == i]
-    #     print(track)
+    #     for j in range(track.shape[0]):
+    #         print(track[j])
     #     print()
 
     # print(trackml_data[50])
@@ -80,6 +101,20 @@ def main():
     # print(trackml_data[151])
     # print(trackml_data.num_features)
     # print(trackml_data.processed_file_names)
+
+
+    # data0 = torch.load('/data/gnn_code/training_data/detector_pt2.0_nobatch/processed/data_0.pt').to('cuda:0')
+    # # data1 = torch.load('/data/gnn_code/training_data/test_old/processed/data_1.pt').to('cuda:0')
+    # #
+    # print(trackml_data[0])
+    # print(trackml_data[0].y.sum())
+    # print(data0)
+    # print(data0.y.sum())
+    #
+    # print(trackml_data[0].x)
+    # print(trackml_data[1].x)
+    # print(data0.x)
+
 
 if __name__ == '__main__':
     main()

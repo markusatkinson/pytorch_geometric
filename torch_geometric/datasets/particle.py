@@ -3,10 +3,12 @@ import glob
 
 import multiprocessing as mp
 from tqdm import tqdm
+import random
 import torch
 import pandas
 import numpy as np
 import matplotlib.pyplot as plt
+from torch_geometric.utils import is_undirected
 from torch_geometric.data import Data, Dataset
 
 
@@ -24,6 +26,7 @@ class TrackMLParticleTrackingDataset(Dataset):
             (default: :obj:`None`)
 
         n_events (int): Number of events in the raw folder to process
+
 
 
     GRAPH CONSTRUCTION PARAMETERS
@@ -76,6 +79,11 @@ class TrackMLParticleTrackingDataset(Dataset):
             dimensions (Nx5) with the following columns:
             [r coord, phi coord, z coord, layer index, track number]
 
+        directed (bool): Edges are directed, for an undirected graph, edges are
+            duplicated and in reverse direction.
+
+        layer_pairs_plus (bool): Allows for edge connections within the same layer    
+
 
     MULTIPROCESSING PARAMETERS
     ###########################################################################
@@ -89,6 +97,7 @@ class TrackMLParticleTrackingDataset(Dataset):
     url = 'https://www.kaggle.com/c/trackml-particle-identification'
 
     def __init__(self, root, transform=None, n_events=0,
+                 directed=False, layer_pairs_plus=False,
                  volume_layer_ids=[[8, 2], [8, 4], [8, 6], [8, 8]], #Layers Selected
                  layer_pairs=[[7, 8], [8, 9], [9, 10]],             #Connected Layers
                  pt_min=2.0, eta_range=[-5, 5],                     #Node Cuts
@@ -103,6 +112,8 @@ class TrackMLParticleTrackingDataset(Dataset):
         if (n_events > 0):
             self.events = self.events[:n_events]
 
+        self.directed         = directed
+        self.layer_pairs_plus = layer_pairs_plus
         self.volume_layer_ids = torch.tensor(volume_layer_ids)
         self.layer_pairs      = torch.tensor(layer_pairs)
         self.pt_min           = pt_min
@@ -225,39 +236,38 @@ class TrackMLParticleTrackingDataset(Dataset):
     def select_hits(self, hits, particles, truth):
         # print('Selecting Hits')
         valid_layer = 20 * self.volume_layer_ids[:,0] + self.volume_layer_ids[:,1]
-        hits = (hits[['hit_id', 'x', 'y', 'z', 'volume_id', 'layer_id']]
-                .merge(truth[['hit_id', 'particle_id']], on='hit_id'))
-        hits = (hits[['hit_id', 'x', 'y', 'z', 'volume_id', 'layer_id', 'particle_id']]
-                .merge(particles[['particle_id', 'px', 'py', 'pz']], on='particle_id'))
+        n_det_layers = len(valid_layer)
 
         layer = torch.from_numpy(20 * hits['volume_id'].values + hits['layer_id'].values)
-        r = torch.from_numpy(np.sqrt(hits['x'].values**2 + hits['y'].values**2))
-        phi = torch.from_numpy(np.arctan2(hits['y'].values, hits['x'].values))
+        index = layer.unique(return_inverse=True)[1]
+        hits = hits[['hit_id', 'x', 'y', 'z']].assign(layer=layer, index=index)
+
+        valid_groups = hits.groupby(['layer'])
+        hits = pandas.concat([valid_groups.get_group(valid_layer.numpy()[i]) for i in range(n_det_layers)])
+
+        pt = np.sqrt(particles['px'].values**2 + particles['py'].values**2)
+        particles = particles[pt > self.pt_min]
+
+        hits = (hits[['hit_id', 'x', 'y', 'z', 'index']].merge(truth[['hit_id', 'particle_id']], on='hit_id'))
+        hits = (hits.merge(particles[['particle_id']], on='particle_id'))
+
+        r = np.sqrt(hits['x'].values**2 + hits['y'].values**2)
+        phi = np.arctan2(hits['y'].values, hits['x'].values)
+        theta = np.arctan2(r,hits['z'].values)
+        eta = -1*np.log(np.tan(theta/2))
+        hits = hits[['z', 'index', 'particle_id']].assign(r=r, phi=phi, eta=eta)
+
+        # Remove duplicate hits
+        if not self.layer_pairs_plus:
+            hits = hits.loc[hits.groupby(['particle_id', 'index'], as_index=False).r.idxmin()]
+
+        r = torch.from_numpy(hits['r'].values)
+        phi = torch.from_numpy(hits['phi'].values)
         z = torch.from_numpy(hits['z'].values)
-        theta = torch.atan2(r,z)
-        eta = -1*torch.log(torch.tan(theta/2))
-        pt = torch.from_numpy(np.sqrt(hits['px'].values**2 + hits['py'].values**2))
+        eta = torch.from_numpy(hits['eta'].values)
+        layer = torch.from_numpy(hits['index'].values)
         particle = torch.from_numpy(hits['particle_id'].values)
-
-        layer_mask = torch.from_numpy(np.isin(layer, valid_layer))
-        eta_mask1 = eta > self.eta_range[0]
-        eta_mask2 = eta < self.eta_range[1]
-        pt_mask = pt > self.pt_min
-        mask = layer_mask & eta_mask1 & eta_mask2 & pt_mask
-
-        layer = layer.unique(return_inverse=True)[1]
-        r = r[mask]
-        phi = phi[mask]
-        z = z[mask]
         pos = torch.stack([r, phi, z], 1)
-        layer = layer[mask]
-        particle = particle[mask]
-        eta = eta[mask]
-
-        layer, indices = torch.sort(layer)
-        pos = pos[indices]
-        particle = particle[indices]
-        eta = eta[indices]
 
         return pos, layer, particle, eta
 
@@ -266,7 +276,13 @@ class TrackMLParticleTrackingDataset(Dataset):
         # print("Constructing Edge Index")
         edge_indices = torch.empty(2,0, dtype=torch.long)
 
-        for (layer1, layer2) in self.layer_pairs:
+        layer_pairs = self.layer_pairs
+        if self.layer_pairs_plus:
+            layers = layer.unique()
+            layer_pairs_plus = torch.tensor([[layers[i],layers[i]] for i in range(layers.shape[0])])
+            layer_pairs = torch.cat((layer_pairs, layer_pairs_plus), 0)
+
+        for (layer1, layer2) in layer_pairs:
             mask1 = layer == layer1
             mask2 = layer == layer2
             nnz1 = mask1.nonzero().flatten()
@@ -285,18 +301,14 @@ class TrackMLParticleTrackingDataset(Dataset):
             # Check for intersecting edges between barrel and endcap connections
             intersected_layer = dr.abs() < -1
             if (self.intersect):
-                z_avg = pos[:, 2][mask2].mean().abs()
-                inner_endcap = (z_avg > 599) & (z_avg < 601)
-                if (inner_endcap):
-                    r_avg = pos[:, 0][mask1].mean()
-                    lowest_layer = (r_avg > 31) & (r_avg < 33)
-                    second_layer = (r_avg > 71) & (r_avg < 73)
-                    if(lowest_layer):
-                        z_int =  71.56298065185547 * dz / dr + z0
-                        intersected_layer = z_int.abs() < 490.975
-                    elif (second_layer):
-                        z_int = 115.37811279296875 * dz / dr + z0
-                        intersected_layer = z_int.abs() < 490.975
+                if((layer1 == 7 and (layer2 == 6 or layer2 == 11)) or
+                   (layer2 == 7 and (layer1 == 6 or layer1 == 11))):
+                    z_int =  71.56298065185547 * dz / dr + z0
+                    intersected_layer = z_int.abs() < 490.975
+                elif((layer1 == 8 and (layer2 == 6 or layer2 == 11)) or
+                     (layer2 == 8 and (layer1 == 6 or layer1 == 11))):
+                    z_int = 115.37811279296875 * dz / dr + z0
+                    intersected_layer = z_int.abs() < 490.975
 
             adj = (phi_slope.abs() < self.phi_slope_max) & (z0.abs() < self.z0_max) & (intersected_layer == False)
 
@@ -388,14 +400,19 @@ class TrackMLParticleTrackingDataset(Dataset):
         for i in range(len(pos_sect)):
             edge_index = self.compute_edge_index(pos_sect[i], layer_sect[i])
             y = self.compute_y_index(edge_index, particle_sect[i])
-
             data = Data(x=pos_sect[i], edge_index=edge_index, y=y, tracks=tracks)
+
+            if not self.directed and not data.is_undirected():
+                rows,cols = data.edge_index
+                temp = torch.stack((cols,rows))
+                data.edge_index = torch.cat([data.edge_index,temp],dim=-1)
+                data.y = torch.cat([data.y,data.y])
+
             torch.save(data, osp.join(self.processed_dir, 'event{}_section{}.pt'.format(idx, i)))
 
             if (self.augments):
-                pos_sect[i][:,1]=-pos_sect[i][:,1]
-                data_aug = Data(x=pos_sect[i], edge_index=edge_index, y=y, tracks=tracks)
-                torch.save(data_aug, osp.join(self.processed_dir, 'event{}_section{}_aug.pt'.format(idx, i)))
+                data.x[:,1]= -data.x[:,1]
+                torch.save(data, osp.join(self.processed_dir, 'event{}_section{}_aug.pt'.format(idx, i)))
 
         # if self.pre_filter is not None and not self.pre_filter(data):
         #     continue
@@ -481,8 +498,8 @@ class TrackMLParticleTrackingDataset(Dataset):
 
         layer_mask = torch.from_numpy(np.isin(layer, valid_layer))
         pt_mask = pt > self.pt_min
-        mask = layer_mask & pt_mask
-        # mask = pt_mask
+        # mask = layer_mask & pt_mask
+        mask = pt_mask
 
         layer = layer.unique(return_inverse=True)[1]
         r = r[mask]
@@ -515,3 +532,11 @@ class TrackMLParticleTrackingDataset(Dataset):
 
     def files_exist(self, files):
         return len(files) != 0 and all([osp.exists(f) for f in files])
+
+
+    def shuffle(self):
+        random.shuffle(self.processed_files)
+
+
+    def sort(self):
+        self.processed_files.sort()

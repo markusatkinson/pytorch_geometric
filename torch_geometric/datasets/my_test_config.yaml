@@ -65,8 +65,8 @@ selection:
 
     n_phi_sections: 1
     n_eta_sections: 1
-    # eta_range: [-5, 5]
-    eta_range: [-100, 100]
+    eta_range: [-5, 5]
+    # eta_range: [-100, 100]
 
     #Edges between barrel and endcap can intersect intermediate barrel layers
     remove_intersecting_edges: True
@@ -80,9 +80,9 @@ selection:
                        [7,2], [7,4], [7,6], [7,8], [7,10], [7,12], [7,14]]     #back endcap
 
     layer_pairs : [[7, 8], [8, 9], [9, 10],                                     #barrel
-                   [7, 11], [8, 11], [9, 11],                                   #barrel to front endcap
+                   [7, 11], [8, 11], [9, 11], [10, 11],                                   #barrel to front endcap
                    [11, 12], [12, 13], [13, 14], [14, 15], [15, 16], [16, 17],  #front endcap
-                   [7, 6], [8, 6], [9, 6],                                      #barrel to back endcap
+                   [7, 6], [8, 6], [9, 6], [10, 6],                                      #barrel to back endcap
                    [6, 5], [5, 4], [4, 3], [3, 2], [2, 1], [1, 0]]              #back endcap
 
     # ATLAS Geometry
